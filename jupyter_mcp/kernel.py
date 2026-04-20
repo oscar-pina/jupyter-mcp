@@ -174,14 +174,17 @@ class LocalKernelProvider(KernelProvider):
         resolved_cwd = str(Path(cwd).expanduser().resolve()) if cwd else str(Path.cwd())
         if python_path:
             from jupyter_client.kernelspec import KernelSpec
-            resolved_py = Path(python_path).expanduser().resolve()
-            if not resolved_py.exists():
+            # expanduser but do NOT resolve() — resolving follows symlinks and
+            # would replace a virtualenv's `python` symlink with the base
+            # interpreter, losing the virtualenv's site-packages.
+            py_path = Path(python_path).expanduser()
+            if not py_path.exists():
                 raise ValueError(f"python_path {python_path!r} does not exist")
-            if not resolved_py.is_file():
+            if not py_path.is_file():
                 raise ValueError(f"python_path {python_path!r} is not a file")
             spec = KernelSpec(
-                argv=[str(resolved_py), "-m", "ipykernel_launcher", "-f", "{connection_file}"],
-                display_name=f"Python ({resolved_py.parent.parent.name})",
+                argv=[str(py_path), "-m", "ipykernel_launcher", "-f", "{connection_file}"],
+                display_name=f"Python ({py_path.parent.parent.name})",
                 language="python",
             )
             km = KernelManager()
