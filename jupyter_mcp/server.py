@@ -28,6 +28,10 @@ mcp = FastMCP(
     instructions=(
         "Agent-first Jupyter MCP server.\n"
         "\n"
+        "No Jupyter server required. This MCP server launches and manages kernel\n"
+        "processes directly — do not ask the user to start jupyter notebook or\n"
+        "jupyter lab. Just call list_runtimes and create_session to begin.\n"
+        "\n"
         "Typical workflow:\n"
         "  1. list_runtimes → pick a runtime name\n"
         "  2. create_session(runtime) → session_id\n"
