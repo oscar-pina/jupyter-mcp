@@ -19,7 +19,7 @@ An agent-first MCP server for Jupyter execution and notebook operations.
 Available in every project, no cloning required. Run once:
 
 ```bash
-claude mcp add jupyter-mcp -s user -- uvx --from "git+https://github.com/OWNER/jupyter-mcp" jupyter-mcp
+claude mcp add jupyter-mcp -s user -- uvx --from "git+https://github.com/oscar-pina/jupyter-mcp" jupyter-mcp
 ```
 
 `uvx` fetches the package from GitHub and installs it in an isolated cache it manages. Nothing lands in your project or system Python.
@@ -36,7 +36,7 @@ claude mcp list
 Registers the MCP server only for the current project (writes to `.mcp.json`):
 
 ```bash
-claude mcp add jupyter-mcp -- uvx --from "git+https://github.com/OWNER/jupyter-mcp" jupyter-mcp
+claude mcp add jupyter-mcp -- uvx --from "git+https://github.com/oscar-pina/jupyter-mcp" jupyter-mcp
 ```
 
 Colleagues who clone the project get the same configuration automatically when they open it in Claude Code.
@@ -44,7 +44,7 @@ Colleagues who clone the project get the same configuration automatically when t
 ### Option C — Development (contributing to jupyter-mcp)
 
 ```bash
-git clone https://github.com/OWNER/jupyter-mcp.git
+git clone https://github.com/oscar-pina/jupyter-mcp.git
 cd jupyter-mcp
 uv sync
 ```
