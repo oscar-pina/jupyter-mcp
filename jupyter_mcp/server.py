@@ -41,18 +41,29 @@ mcp = FastMCP(
         "  3. run_code(session_id, code, wait_ms=5000) → inline result when fast,\n"
         "     or operation descriptor to poll with get_operation(op_id, wait_ms=5000)\n"
         "  4. close_session(session_id) when done\n"
+        "  Variables and imports persist between run_code calls in the same session.\n"
         "\n"
-        "Workflow for executing a notebook file (simpler — no session needed):\n"
+        "Workflow for executing a notebook file:\n"
         "  1. list_runtimes → pick a runtime name\n"
         "  2. run_notebook(path, runtime_or_session=runtime, mode='fresh')\n"
         "     Executes all cells and writes outputs back to the file.\n"
+        "     Returns an operation descriptor (default wait_ms=0, fire-and-forget).\n"
+        "  3. Poll with get_operation(op_id, wait_ms=5000) until status is\n"
+        "     'completed' or 'failed'. Use cancel_operation(op_id) to abort.\n"
+        "  mode='fresh': disposable isolated kernel (reproducible). Default.\n"
+        "  mode='session': reuse an existing stateful session (preserves variables).\n"
         "\n"
         "Notebook editing uses optimistic concurrency: every mutation (insert_cell,\n"
-        "update_cell, delete_cell, move_cell, clear_outputs, batch_cells) requires a\n"
-        "base_revision token from read_notebook. On conflict (file changed externally),\n"
-        "the tool returns error code 'Conflict' — re-read and retry.\n"
+        "update_cell, delete_cell, move_cell, clear_outputs, batch_cells,\n"
+        "delete_notebook) requires a base_revision token from read_notebook.\n"
+        "On conflict (file changed externally), the tool returns error code\n"
+        "'Conflict' — re-read to get the latest revision and retry.\n"
         "\n"
-        "Error format: {\"error\": {\"code\": \"...\", \"message\": \"...\"}}\n"
+        "Error format: {\"error\": {\"code\": \"...\", \"message\": \"...\", \"details\": ...}}\n"
+        "(details field is optional)\n"
+        "On 'Conflict': re-read the notebook and retry with the new revision.\n"
+        "On 'NotFound': verify the session_id or file path.\n"
+        "On 'ExecutionError': check code syntax or use restart_session to reset.\n"
         "Operation statuses: queued → running → completed | failed | cancelled\n"
         "\n"
         "Variable inspection (synchronous): get_variable, list_variables\n"
@@ -108,8 +119,9 @@ del _val, _json
 _LIST_VARIABLES_CODE = """\
 import json as _json
 _skip = {"__builtins__", "__name__", "__doc__", "__package__",
-         "__loader__", "__spec__", "__annotations__", "__builtinms__"}
+         "__loader__", "__spec__", "__annotations__"}
 _rows = []
+_k = _v = None
 for _k, _v in list(vars().items()):
     if _k.startswith("_") or _k in _skip:
         continue
@@ -151,7 +163,8 @@ def create_session(
         cwd: Optional working directory for kernel startup.
         env: Optional environment variables for the kernel process.
             Dangerous variables (LD_*, DYLD_*, PYTHONSTARTUP) are rejected.
-        isolation: `ephemeral` (auto-closed after idle; default) or `persistent`.
+        isolation: `ephemeral` (auto-closed after 30 min idle; default) or
+            `persistent` (remains until explicitly closed).
         python_path: Path to a Python interpreter to use instead of the
             registered kernel spec (e.g. '/path/to/.venv/bin/python').
             ipykernel must be installed in that environment.
@@ -256,7 +269,8 @@ def list_notebooks(directory: str = ".") -> dict:
     """List notebooks under a directory (recursive, checkpoint dirs excluded).
 
     Args:
-        directory: Base directory to scan.
+        directory: Base directory to scan (default '.' resolves to the server
+            process working directory; prefer absolute paths).
 
     Returns:
         Dict with canonical directory path and notebook entries.
@@ -327,11 +341,14 @@ def read_notebook(
     Args:
         path: Notebook file path.
         cell_selector: Optional `start:end` slice to limit returned cells (exclusive end,
-            e.g. '0:5' = first 5 cells). Use run_notebook's cell_selector for richer
-            selection syntax when executing.
+            e.g. '0:5' = first 5 cells). Only simple slices are supported here.
+            run_notebook's cell_selector additionally supports single index, `all`,
+            and comma-combinations like '1,3,5:9'.
         include_outputs: Include code cell outputs (default True).
         output_limit: Max characters per textual output in response.
-        include_images: Include raw base64 image data in outputs (default False).
+        include_images: When True, include raw base64 image data. When False
+            (default), images are replaced with size placeholders like
+            '[base64 PNG, 1234 chars]'.
 
     Returns:
         Notebook payload including `revision` for optimistic updates.
@@ -442,7 +459,9 @@ def move_cell(path: str, base_revision: str, from_index: int, to_index: int) -> 
         path: Notebook path.
         base_revision: Revision returned by read_notebook.
         from_index: Current cell index.
-        to_index: Destination index.
+        to_index: Destination index, interpreted after the cell is removed from
+            from_index. E.g. to move cell 0 to the end of a 5-cell notebook,
+            use from_index=0, to_index=4 (not 5).
 
     Returns:
         Mutation status with new revision.
@@ -494,7 +513,13 @@ def batch_cells(path: str, base_revision: str, operations: list) -> dict:
     Each operation dict must include an `action` key:
       - `{"action": "insert", "index": <int>, "cell_type": <str>, "source": <str>}`
       - `{"action": "update", "cell_index": <int>, "source": <str>, "reset_outputs": <bool>}`
+        (`reset_outputs` is optional, defaults to True)
       - `{"action": "delete", "cell_index": <int>}`
+
+    IMPORTANT: Operations are applied sequentially to a live list. An insert
+    shifts all subsequent cell indices up by 1; a delete shifts them down.
+    Plan indices accordingly, or process in reverse index order when mixing
+    inserts and deletes.
 
     Args:
         path: Notebook path.
@@ -542,10 +567,15 @@ def run_code(
         session_id: Existing session ID from create_session.
         code: Source code to execute.
         timeout_s: Wall-clock execution timeout in seconds.
-        on_timeout: Timeout policy (`interrupt` only).
-        capture: `summary` (default, limited rich outputs) or `full`.
+        on_timeout: Action when timeout_s is exceeded. `interrupt` (only option)
+            sends a kernel interrupt signal, stopping execution but keeping
+            the session alive.
+        capture: Output detail level. `summary` (default) caps rich_outputs at
+            10 items. `full` returns all outputs unfiltered.
         wait_ms: Milliseconds to wait for inline result (0 = fire-and-forget).
-        include_images: Include raw base64 image data in outputs (default False).
+        include_images: When True, include raw base64 image data. When False
+            (default), images are replaced with size placeholders like
+            '[base64 PNG, 1234 chars]'.
 
     Returns:
         Completed operation snapshot when fast, or operation descriptor to poll.
@@ -586,13 +616,18 @@ def run_notebook(
 
     Args:
         path: Notebook path.
-        runtime_or_session: Runtime name (fresh mode) or session_id (session mode).
+        runtime_or_session: Runtime name from list_runtimes, or an existing
+            session_id. In fresh mode, a session_id is also accepted — the
+            runtime is extracted from it and a new isolated kernel is launched.
+            In session mode, must be an existing session_id.
         mode: `fresh` (reproducible isolated run) or `session` (reuse stateful session).
         cell_selector: Which cells to run. Supports: `all` (default), single index
             (`5`), slice (`5:9`, exclusive end), or comma-combinations (`1,3,5:9`).
         timeout_s: Timeout per cell in seconds.
         stop_on_error: Stop at first execution error.
-        wait_ms: Milliseconds to wait for an inline result (0 = fire-and-forget).
+        wait_ms: Milliseconds to wait for an inline result. Default 0 means
+            fire-and-forget — the tool returns immediately with an operation
+            descriptor. Poll with get_operation(op_id, wait_ms=5000).
 
     Returns:
         Completed operation snapshot when fast, or operation descriptor to poll.
@@ -692,7 +727,9 @@ def get_operation(op_id: str, wait_ms: int = 0) -> dict:
 
     Args:
         op_id: Operation ID from run_code/run_notebook.
-        wait_ms: Optional wait duration before returning.
+        wait_ms: Long-poll timeout in milliseconds. The server blocks up to this
+            duration waiting for the operation to finish, then returns the
+            current snapshot regardless. 0 = immediate non-blocking check.
 
     Returns:
         Operation snapshot.
