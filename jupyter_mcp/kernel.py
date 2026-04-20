@@ -185,10 +185,13 @@ class LocalKernelProvider(KernelProvider):
                 language="python",
             )
             km = KernelManager()
-            km.kernel_spec = spec
+            km._kernel_spec = spec
         else:
             km = KernelManager(kernel_name=runtime)
-        km.start_kernel(cwd=resolved_cwd, env=env)
+        kw: dict = {"cwd": resolved_cwd}
+        if env is not None:
+            kw["env"] = env
+        km.start_kernel(**kw)
         try:
             kc = km.client()
             kc.start_channels()
