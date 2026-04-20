@@ -24,7 +24,7 @@ from jupyter_mcp.orchestrator import ExecutionOrchestrator
 # ---------------------------------------------------------------------------
 
 mcp = FastMCP(
-    "jupyter-mcp-v2",
+    "jupyter-mcp",
     instructions=(
         "Agent-first Jupyter MCP server.\n"
         "\n"
