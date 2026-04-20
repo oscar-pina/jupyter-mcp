@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "jupyter-mcp": {
+      "command": "python",
+      "args": ["-m", "jupyter_mcp.server"]
+    }
+  }
+}
