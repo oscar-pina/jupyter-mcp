@@ -48,6 +48,8 @@ class ExecutionOrchestrator:
         timeout_s: int,
         stop_on_error: bool,
         on_progress: Optional[Callable[[dict], None]] = None,
+        is_cancelled: Optional[Callable[[], bool]] = None,
+        on_session_ready: Optional[Callable[[str], None]] = None,
     ) -> dict:
         session_id: Optional[str] = None
         created_temp = False
@@ -69,6 +71,9 @@ class ExecutionOrchestrator:
 
         assert session_id is not None
 
+        if on_session_ready is not None:
+            on_session_ready(session_id)
+
         try:
             read_data = self.notebooks.read(path=path, cell_range=None, include_outputs=False, output_limit=20000)
             revision = read_data["revision"]
@@ -83,6 +88,14 @@ class ExecutionOrchestrator:
             executed_count = 0
 
             for idx in selected:
+                if is_cancelled is not None and is_cancelled():
+                    return {
+                        "status": "cancelled",
+                        "cells_executed": executed_count,
+                        "results": results,
+                        "revision": revision,
+                    }
+
                 cell = cells[idx]
                 if cell["cell_type"] != "code" or not str(cell.get("source", "")).strip():
                     results.append({"index": idx, "skipped": True, "reason": "non-code or empty"})

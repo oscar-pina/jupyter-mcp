@@ -18,6 +18,7 @@ import nbformat
 from jupyter_client.kernelspec import KernelSpecManager
 
 from jupyter_mcp import (
+    ConflictError,
     _strip_ansi,
     _truncate_text,
     _format_display_dict,
@@ -180,7 +181,7 @@ class FileNotebookStore(NotebookStore):
     def _check_revision(self, path: Path, expected_revision: str) -> str:
         current_revision = self._revision(path)
         if expected_revision != current_revision:
-            raise RuntimeError(
+            raise ConflictError(
                 f"Revision conflict: expected {expected_revision}, current {current_revision}"
             )
         return current_revision
@@ -230,6 +231,7 @@ class FileNotebookStore(NotebookStore):
 
     def list_notebooks(self, directory: str) -> dict:
         path = Path(directory).expanduser().resolve()
+        self._check_allowed(path)
         if not path.exists():
             raise FileNotFoundError(f"Directory {directory!r} not found")
         if not path.is_dir():
@@ -505,7 +507,7 @@ class FileNotebookStore(NotebookStore):
         with self._lock_for(nb_path):
             current_revision = self._revision(nb_path)
             if expected_revision != current_revision:
-                raise RuntimeError(
+                raise ConflictError(
                     f"Revision conflict during execution write: expected {expected_revision}, current {current_revision}"
                 )
 
@@ -516,7 +518,7 @@ class FileNotebookStore(NotebookStore):
             if cell.cell_type != "code":
                 raise ValueError(f"Cell {cell_index} is not code")
             if cell.source != expected_source:
-                raise RuntimeError(f"Cell {cell_index} source changed; refusing to write outputs")
+                raise ConflictError(f"Cell {cell_index} source changed; refusing to write outputs")
 
             cell.execution_count = execution_count
             cell.outputs = _build_nbformat_outputs(raw_messages, execution_count)

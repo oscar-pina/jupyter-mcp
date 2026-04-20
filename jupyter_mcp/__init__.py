@@ -35,6 +35,10 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:10]}"
 
 
+class ConflictError(RuntimeError):
+    """Raised when a notebook revision conflict is detected."""
+
+
 def _tool_error(code: str, message: str, details: Optional[dict] = None) -> dict:
     payload = {"code": code, "message": message}
     if details:
@@ -198,6 +202,8 @@ from jupyter_mcp.operations import OperationRecord, OperationManager  # noqa: E4
 from jupyter_mcp.orchestrator import ExecutionOrchestrator  # noqa: E402
 
 __all__ = [
+    # exceptions
+    "ConflictError",
     # helpers
     "_utc_now",
     "_new_id",

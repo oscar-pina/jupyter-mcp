@@ -7,6 +7,7 @@ local process-backed Jupyter kernels via jupyter_client.
 from __future__ import annotations
 
 import dataclasses
+import os
 import queue
 import threading
 from abc import ABC, abstractmethod
@@ -193,7 +194,9 @@ class LocalKernelProvider(KernelProvider):
             km = KernelManager(kernel_name=runtime)
         kw: dict = {"cwd": resolved_cwd}
         if env is not None:
-            kw["env"] = env
+            merged = os.environ.copy()
+            merged.update(env)
+            kw["env"] = merged
         km.start_kernel(**kw)
         try:
             kc = km.client()

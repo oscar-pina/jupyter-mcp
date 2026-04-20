@@ -12,7 +12,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Optional
 
-from jupyter_mcp import _utc_now, _new_id, _tool_error, _OPERATION_TTL_SECONDS
+from jupyter_mcp import _utc_now, _new_id, _tool_error, _OPERATION_TTL_SECONDS, ConflictError
 
 
 @dataclasses.dataclass
@@ -110,6 +110,12 @@ class OperationManager:
                             op.status = "completed"
                             op.result = result
                         op.ended_at = _utc_now()
+                except ConflictError as exc:
+                    with self._lock:
+                        op = self._ops[op_id]
+                        op.status = "failed"
+                        op.error = {"code": "Conflict", "message": str(exc)}
+                        op.ended_at = _utc_now()
                 except Exception as exc:
                     with self._lock:
                         op = self._ops[op_id]
@@ -163,6 +169,12 @@ class OperationManager:
 
         with self._lock:
             return self._snapshot(op)
+
+    def is_cancelled(self, op_id: str) -> bool:
+        """Return True if the operation has been marked for cancellation."""
+        with self._lock:
+            rec = self._ops.get(op_id)
+            return rec is not None and rec.cancelled
 
     def update_progress(self, op_id: str, progress: dict) -> None:
         """Update the progress field of a running operation."""

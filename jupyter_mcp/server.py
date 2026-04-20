@@ -32,7 +32,7 @@ mcp = FastMCP(
         "processes directly — do not ask the user to start jupyter notebook or\n"
         "jupyter lab. Just call list_runtimes and create_session to begin.\n"
         "\n"
-        "If list_runtimes returns an empty list, ipykernel is not installed.\n"
+        "If list_runtimes returns an empty list, ipykernel is most likely not installed.\n"
         "Tell the user to run: pip install ipykernel\n"
         "\n"
         "Workflow for running code interactively:\n"
@@ -279,6 +279,8 @@ def list_notebooks(directory: str = ".") -> dict:
         return notebooks.list_notebooks(directory)
     except FileNotFoundError as exc:
         return _tool_error("NotFound", str(exc))
+    except PermissionError as exc:
+        return _tool_error("SecurityError", str(exc))
     except ValueError as exc:
         return _tool_error("ValidationError", str(exc))
     except Exception as exc:
@@ -459,9 +461,9 @@ def move_cell(path: str, base_revision: str, from_index: int, to_index: int) -> 
         path: Notebook path.
         base_revision: Revision returned by read_notebook.
         from_index: Current cell index.
-        to_index: Destination index, interpreted after the cell is removed from
-            from_index. E.g. to move cell 0 to the end of a 5-cell notebook,
-            use from_index=0, to_index=4 (not 5).
+        to_index: Destination index. Valid range: 0 to cell_count inclusive.
+            E.g. to move cell 0 to the end of a 5-cell notebook,
+            from_index=0 with to_index=4 or to_index=5 both work.
 
     Returns:
         Mutation status with new revision.
@@ -635,15 +637,34 @@ def run_notebook(
     if mode not in {"fresh", "session"}:
         return _tool_error("ValidationError", "mode must be 'fresh' or 'session'")
 
+    # Shared container: written by orchestrator once session is ready,
+    # read by _cancel_cb so it can interrupt the kernel mid-cell.
+    session_holder: list = [None]
+
     def _job(op_id: str) -> dict:
         def _on_progress(p: dict) -> None:
             ops.update_progress(op_id, p)
 
+        def _is_cancelled() -> bool:
+            return ops.is_cancelled(op_id)
+
+        def _on_session_ready(sid: str) -> None:
+            session_holder[0] = sid
+
         return orchestrator.run_notebook(
-            path, runtime_or_session, mode, cell_selector, timeout_s, stop_on_error, _on_progress
+            path, runtime_or_session, mode, cell_selector, timeout_s, stop_on_error,
+            _on_progress, _is_cancelled, _on_session_ready,
         )
 
-    snapshot = ops.submit(kind="run_notebook", fn=_job)
+    def _cancel_cb() -> None:
+        sid = session_holder[0]
+        if sid is not None:
+            try:
+                provider.interrupt(sid)
+            except Exception:
+                pass
+
+    snapshot = ops.submit(kind="run_notebook", fn=_job, cancel_callback=_cancel_cb)
     if "error" in snapshot or wait_ms <= 0:
         return snapshot
     return ops.get(op_id=snapshot["op_id"], wait_ms=wait_ms)
@@ -656,11 +677,15 @@ def run_notebook(
 
 @mcp.tool()
 def get_variable(session_id: str, name: str) -> dict:
-    """Inspect a single variable in a running session (synchronous).
+    """Inspect a variable or evaluate an expression in a running session (synchronous).
+
+    The name parameter is evaluated with eval() in the kernel, so it accepts
+    variable names, attribute access (e.g. "df.shape"), or expressions
+    (e.g. "len(my_list)").
 
     Args:
         session_id: Existing session ID.
-        name: Variable name to inspect.
+        name: Variable name or expression to inspect.
 
     Returns:
         Dict with `name`, `value` (repr), and `type`, or `error` if not defined.

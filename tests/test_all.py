@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import nbformat
 
 from jupyter_mcp import (
+    ConflictError,
     _utc_now,
     _new_id,
     _tool_error,
@@ -243,6 +244,25 @@ class TestOperationManager(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn("boom", result["error"]["message"])
 
+    def test_conflict_error_maps_to_conflict_code(self):
+        def job(_op_id):
+            raise ConflictError("Revision conflict: expected abc, current def")
+
+        snap = self.mgr.submit("test", job)
+        result = self.mgr.get(snap["op_id"], wait_ms=5000)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error"]["code"], "Conflict")
+        self.assertIn("Revision conflict", result["error"]["message"])
+
+    def test_plain_runtime_error_maps_to_execution_error(self):
+        def job(_op_id):
+            raise RuntimeError("something else broke")
+
+        snap = self.mgr.submit("test", job)
+        result = self.mgr.get(snap["op_id"], wait_ms=5000)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error"]["code"], "ExecutionError")
+
     def test_get_nonexistent_op(self):
         result = self.mgr.get("op_doesnotexist")
         self.assertIn("error", result)
@@ -366,8 +386,8 @@ class TestFileNotebookStore(unittest.TestCase):
         result = self._create()
         rev = result["revision"]
         self.store.insert_cell(self.nb_path, rev, 0, "code", "x = 1")
-        # Use stale revision
-        with self.assertRaises(RuntimeError):
+        # Use stale revision — must raise ConflictError (subclass of RuntimeError)
+        with self.assertRaises(ConflictError):
             self.store.insert_cell(self.nb_path, rev, 0, "code", "y = 2")
 
     def test_clear_outputs_single_cell(self):
