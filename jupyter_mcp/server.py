@@ -1,4 +1,4 @@
-"""FastMCP server entry point with all 22 MCP tool definitions.
+"""FastMCP server entry point with all 21 MCP tool definitions.
 
 Start with: python -m jupyter_mcp.server
 """
@@ -30,28 +30,28 @@ mcp = FastMCP(
         "\n"
         "No Jupyter server required. This MCP server launches and manages kernel\n"
         "processes directly — do not ask the user to start jupyter notebook or\n"
-        "jupyter lab. Just call list_runtimes and create_session to begin.\n"
+        "jupyter lab. Just call create_session to begin.\n"
         "\n"
-        "If list_runtimes returns an empty list, ipykernel is most likely not installed.\n"
-        "Tell the user to run: pip install ipykernel\n"
+        "If create_session fails with an ipykernel error, ipykernel is most likely\n"
+        "not installed. Tell the user to run: pip install ipykernel\n"
         "\n"
         "Workflow for running code interactively:\n"
-        "  1. list_runtimes → pick a runtime name\n"
-        "  2. create_session(runtime) → session_id\n"
-        "  3. run_code(session_id, code, wait_ms=5000) → inline result when fast,\n"
+        "  1. create_session() → session_id  (uses system 'python' by default)\n"
+        "     Or: create_session(python_path='/path/to/.venv/bin/python')\n"
+        "  2. run_code(session_id, code, wait_ms=5000) → inline result when fast,\n"
         "     or operation descriptor to poll with get_operation(op_id, wait_ms=5000)\n"
-        "  4. close_session(session_id) when done\n"
+        "  3. close_session(session_id) when done\n"
         "  Variables and imports persist between run_code calls in the same session.\n"
         "\n"
         "Workflow for executing a notebook file:\n"
-        "  1. list_runtimes → pick a runtime name\n"
-        "  2. run_notebook(path, runtime_or_session=runtime, mode='fresh')\n"
+        "  1. run_notebook(path) → uses default 'python' interpreter\n"
+        "     Or: run_notebook(path, python_path='/path/to/.venv/bin/python')\n"
         "     Executes all cells and writes outputs back to the file.\n"
         "     Returns an operation descriptor (default wait_ms=0, fire-and-forget).\n"
-        "  3. Poll with get_operation(op_id, wait_ms=5000) until status is\n"
+        "  2. Poll with get_operation(op_id, wait_ms=5000) until status is\n"
         "     'completed' or 'failed'. Use cancel_operation(op_id) to abort.\n"
         "  mode='fresh': disposable isolated kernel (reproducible). Default.\n"
-        "  mode='session': reuse an existing stateful session (preserves variables).\n"
+        "  mode='session': reuse an existing stateful session (pass session_id).\n"
         "\n"
         "Notebook editing uses optimistic concurrency: every mutation (insert_cell,\n"
         "update_cell, delete_cell, move_cell, clear_outputs, batch_cells,\n"
@@ -136,41 +136,27 @@ del _json, _skip, _rows, _k, _v
 
 
 @mcp.tool()
-def list_runtimes() -> dict:
-    """List available kernel runtimes.
-
-    Returns:
-        Dict with `runtimes`, where each item has runtime, display_name, language.
-    """
-    try:
-        return {"runtimes": provider.list_runtimes()}
-    except Exception as exc:
-        return _tool_error("BackendUnavailable", str(exc))
-
-
-@mcp.tool()
 def create_session(
-    runtime: str,
+    python_path: str = "python",
     cwd: Optional[str] = None,
     env: Optional[dict[str, str]] = None,
     isolation: str = "ephemeral",
-    python_path: Optional[str] = None,
 ) -> dict:
     """Create a kernel-backed execution session.
 
     Args:
-        runtime: Kernel runtime name from list_runtimes (e.g. 'python3').
+        python_path: Python interpreter to use. Accepts a bare command name
+            (e.g. 'python', 'python3', resolved via PATH) or an absolute path
+            (e.g. '/path/to/.venv/bin/python'). Defaults to 'python'.
+            ipykernel must be installed in that environment.
         cwd: Optional working directory for kernel startup.
         env: Optional environment variables for the kernel process.
             Dangerous variables (LD_*, DYLD_*, PYTHONSTARTUP) are rejected.
         isolation: `ephemeral` (auto-closed after 30 min idle; default) or
             `persistent` (remains until explicitly closed).
-        python_path: Path to a Python interpreter to use instead of the
-            registered kernel spec (e.g. '/path/to/.venv/bin/python').
-            ipykernel must be installed in that environment.
 
     Returns:
-        Session descriptor with session_id, runtime, cwd, created_at.
+        Session descriptor with session_id, python_path, cwd, created_at.
     """
     if isolation not in {"ephemeral", "persistent"}:
         return _tool_error("ValidationError", "isolation must be 'ephemeral' or 'persistent'")
@@ -179,7 +165,7 @@ def create_session(
         if err:
             return err
     try:
-        rec = provider.create_session(runtime=runtime, cwd=cwd, env=env, isolation=isolation, python_path=python_path)
+        rec = provider.create_session(python_path=python_path, cwd=cwd, env=env, isolation=isolation)
         return dataclasses.asdict(rec)
     except Exception as exc:
         return _tool_error("ExecutionError", str(exc))
@@ -602,8 +588,9 @@ def run_code(
 @mcp.tool()
 def run_notebook(
     path: str,
-    runtime_or_session: str,
+    python_path: str = "python",
     mode: str = "fresh",
+    session_id: Optional[str] = None,
     cell_selector: Optional[str] = None,
     timeout_s: int = 300,
     stop_on_error: bool = True,
@@ -618,11 +605,12 @@ def run_notebook(
 
     Args:
         path: Notebook path.
-        runtime_or_session: Runtime name from list_runtimes, or an existing
-            session_id. In fresh mode, a session_id is also accepted — the
-            runtime is extracted from it and a new isolated kernel is launched.
-            In session mode, must be an existing session_id.
-        mode: `fresh` (reproducible isolated run) or `session` (reuse stateful session).
+        python_path: Python interpreter for fresh mode (default 'python',
+            resolved via PATH). Ignored when mode='session'.
+        mode: `fresh` (reproducible isolated run, default) or `session`
+            (reuse an existing stateful session).
+        session_id: Existing session ID. Required when mode='session',
+            ignored when mode='fresh'.
         cell_selector: Which cells to run. Supports: `all` (default), single index
             (`5`), slice (`5:9`, exclusive end), or comma-combinations (`1,3,5:9`).
         timeout_s: Timeout per cell in seconds.
@@ -636,6 +624,8 @@ def run_notebook(
     """
     if mode not in {"fresh", "session"}:
         return _tool_error("ValidationError", "mode must be 'fresh' or 'session'")
+    if mode == "session" and session_id is None:
+        return _tool_error("ValidationError", "mode='session' requires session_id")
 
     # Shared container: written by orchestrator once session is ready,
     # read by _cancel_cb so it can interrupt the kernel mid-cell.
@@ -652,7 +642,7 @@ def run_notebook(
             session_holder[0] = sid
 
         return orchestrator.run_notebook(
-            path, runtime_or_session, mode, cell_selector, timeout_s, stop_on_error,
+            path, mode, python_path, session_id, cell_selector, timeout_s, stop_on_error,
             _on_progress, _is_cancelled, _on_session_ready,
         )
 

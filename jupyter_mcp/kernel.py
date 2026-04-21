@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 from jupyter_client import KernelManager
-from jupyter_client.kernelspec import KernelSpecManager
 
 from jupyter_mcp import _utc_now, _new_id, _parse_iopub_messages
 
@@ -30,7 +29,7 @@ _SESSION_IDLE_TIMEOUT = 1800  # 30 minutes
 @dataclasses.dataclass
 class SessionRecord:
     session_id: str
-    runtime: str
+    python_path: str
     isolation: str
     cwd: str
     created_at: float
@@ -56,17 +55,12 @@ class KernelProvider(ABC):
     """Backend abstraction for kernel lifecycle and execution."""
 
     @abstractmethod
-    def list_runtimes(self) -> list[dict]:
-        pass
-
-    @abstractmethod
     def create_session(
         self,
-        runtime: str,
+        python_path: str = "python",
         cwd: Optional[str] = None,
         env: Optional[dict[str, str]] = None,
         isolation: str = "ephemeral",
-        python_path: Optional[str] = None,
     ) -> SessionRecord:
         pass
 
@@ -149,32 +143,18 @@ class LocalKernelProvider(KernelProvider):
             raise RuntimeError(f"Session {session_id!r} kernel is not alive")
         return entry
 
-    def list_runtimes(self) -> list[dict]:
-        ksm = KernelSpecManager()
-        specs = ksm.get_all_specs()
-        out = []
-        for name, spec_data in sorted(specs.items()):
-            spec = spec_data.get("spec", {})
-            out.append(
-                {
-                    "runtime": name,
-                    "display_name": spec.get("display_name", name),
-                    "language": spec.get("language", "unknown"),
-                }
-            )
-        return out
-
     def create_session(
         self,
-        runtime: str,
+        python_path: str = "python",
         cwd: Optional[str] = None,
         env: Optional[dict[str, str]] = None,
         isolation: str = "ephemeral",
-        python_path: Optional[str] = None,
     ) -> SessionRecord:
+        from jupyter_client.kernelspec import KernelSpec
         resolved_cwd = str(Path(cwd).expanduser().resolve()) if cwd else str(Path.cwd())
-        if python_path:
-            from jupyter_client.kernelspec import KernelSpec
+        # Only validate path existence for explicit paths (contain a separator or ~).
+        # Bare command names like "python" are resolved by the OS via PATH.
+        if os.sep in python_path or python_path.startswith("~"):
             # expanduser but do NOT resolve() — resolving follows symlinks and
             # would replace a virtualenv's `python` symlink with the base
             # interpreter, losing the virtualenv's site-packages.
@@ -183,15 +163,16 @@ class LocalKernelProvider(KernelProvider):
                 raise ValueError(f"python_path {python_path!r} does not exist")
             if not py_path.is_file():
                 raise ValueError(f"python_path {python_path!r} is not a file")
-            spec = KernelSpec(
-                argv=[str(py_path), "-m", "ipykernel_launcher", "-f", "{connection_file}"],
-                display_name=f"Python ({py_path.parent.parent.name})",
-                language="python",
-            )
-            km = KernelManager()
-            km._kernel_spec = spec
+            py_str = str(py_path)
         else:
-            km = KernelManager(kernel_name=runtime)
+            py_str = python_path
+        spec = KernelSpec(
+            argv=[py_str, "-m", "ipykernel_launcher", "-f", "{connection_file}"],
+            display_name=f"Python ({py_str})",
+            language="python",
+        )
+        km = KernelManager()
+        km._kernel_spec = spec
         kw: dict = {"cwd": resolved_cwd}
         if env is not None:
             merged = os.environ.copy()
@@ -210,7 +191,7 @@ class LocalKernelProvider(KernelProvider):
         now = _utc_now()
         rec = SessionRecord(
             session_id=sid,
-            runtime=runtime,
+            python_path=python_path,
             isolation=isolation,
             cwd=resolved_cwd,
             created_at=now,

@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 from jupyter_mcp import _parse_iopub_messages
-from jupyter_mcp.kernel import KernelProvider, SessionRecord
+from jupyter_mcp.kernel import KernelProvider
 from jupyter_mcp.notebooks import NotebookStore
 
 
@@ -42,11 +42,12 @@ class ExecutionOrchestrator:
     def run_notebook(
         self,
         path: str,
-        runtime_or_session: str,
         mode: str,
-        cell_selector: Optional[str],
-        timeout_s: int,
-        stop_on_error: bool,
+        python_path: str = "python",
+        target_session_id: Optional[str] = None,
+        cell_selector: Optional[str] = None,
+        timeout_s: int = 300,
+        stop_on_error: bool = True,
         on_progress: Optional[Callable[[dict], None]] = None,
         is_cancelled: Optional[Callable[[], bool]] = None,
         on_session_ready: Optional[Callable[[str], None]] = None,
@@ -54,16 +55,15 @@ class ExecutionOrchestrator:
         session_id: Optional[str] = None
         created_temp = False
 
-        sessions = {s.session_id: s for s in self.provider.list_sessions()}
         if mode == "session":
-            if runtime_or_session not in sessions:
-                raise KeyError("mode='session' requires an existing session_id")
-            session_id = runtime_or_session
+            if target_session_id is None:
+                raise ValueError("mode='session' requires session_id")
+            sessions = {s.session_id: s for s in self.provider.list_sessions()}
+            if target_session_id not in sessions:
+                raise KeyError(f"Session {target_session_id!r} not found")
+            session_id = target_session_id
         elif mode == "fresh":
-            runtime = runtime_or_session
-            if runtime_or_session in sessions:
-                runtime = sessions[runtime_or_session].runtime
-            rec = self.provider.create_session(runtime=runtime, isolation="ephemeral")
+            rec = self.provider.create_session(python_path=python_path, isolation="ephemeral")
             session_id = rec.session_id
             created_temp = True
         else:

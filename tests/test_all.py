@@ -191,7 +191,7 @@ class TestDataclasses(unittest.TestCase):
     def test_session_record_defaults(self):
         rec = SessionRecord(
             session_id="sess_abc",
-            runtime="python3",
+            python_path="python",
             isolation="ephemeral",
             cwd="/tmp",
             created_at=1.0,

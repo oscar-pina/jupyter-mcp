@@ -4,9 +4,9 @@ An agent-first MCP server for Jupyter execution and notebook operations.
 
 ## What it does
 
-`jupyter-mcp` exposes 22 tools to an AI agent via the [Model Context Protocol](https://modelcontextprotocol.io):
+`jupyter-mcp` exposes 21 tools to an AI agent via the [Model Context Protocol](https://modelcontextprotocol.io):
 
-- Create and manage kernel sessions (any installed Jupyter runtime)
+- Create and manage kernel sessions (any Python interpreter)
 - Execute code and get results synchronously or poll asynchronously
 - Read and edit notebooks with optimistic concurrency (revision tokens)
 - Inspect live variables without consuming an operation slot
@@ -66,10 +66,10 @@ uv run pytest tests/ -v
 
 ## Using a project venv
 
-By default, the kernel runs in whatever Python environment is registered as the `python3` kernelspec on your machine. To run code against a specific project venv instead, pass `python_path` when creating a session:
+By default, the kernel runs using the `python` command on your PATH. To run code against a specific project venv instead, pass `python_path` when creating a session:
 
 ```
-create_session(runtime="python3", python_path="/path/to/your-project/.venv/bin/python")
+create_session(python_path="/path/to/your-project/.venv/bin/python")
 ```
 
 **Requirement:** `ipykernel` must be installed in that venv:
@@ -94,11 +94,11 @@ The MCP server and the kernel are separate processes. `python_path` is the seam 
 ## Quick start
 
 ```
-1. list_runtimes                          → choose a runtime, e.g. "python3"
-2. create_session(runtime="python3")      → { session_id: "sess_abc123" }
-3. run_code(session_id, "1 + 1", wait_ms=5000)
+1. create_session()                       → { session_id: "sess_abc123" }
+   Or: create_session(python_path="/path/to/.venv/bin/python")
+2. run_code(session_id, "1 + 1", wait_ms=5000)
    → { status: "completed", result: { stdout: "", execution_count: 1 } }
-4. close_session(session_id)
+3. close_session(session_id)
 ```
 
 Notebook editing uses optimistic concurrency — every mutation requires the `revision` token from `read_notebook`. On conflict (file changed externally) you get error code `"Conflict"`: re-read and retry.
@@ -108,7 +108,6 @@ Notebook editing uses optimistic concurrency — every mutation requires the `re
 ### Session management
 | Tool | Description |
 |------|-------------|
-| `list_runtimes` | List installed kernel specs |
 | `create_session` | Start a kernel session |
 | `get_session` | Get session by ID |
 | `list_sessions` | List all active sessions |
@@ -152,7 +151,7 @@ Notebook editing uses optimistic concurrency — every mutation requires the `re
 ```
 jupyter_mcp/
 ├── __init__.py      Shared helpers and constants
-├── server.py        FastMCP instance + all 22 tool definitions
+├── server.py        FastMCP instance + all 21 tool definitions
 ├── kernel.py        KernelProvider ABC + LocalKernelProvider
 ├── notebooks.py     NotebookStore ABC + FileNotebookStore
 ├── operations.py    OperationRecord + OperationManager
