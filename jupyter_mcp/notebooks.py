@@ -110,6 +110,33 @@ class NotebookStore(ABC):
         pass
 
 
+def parse_cell_selector(selector: Optional[str], count: int) -> tuple[int, int]:
+    """Parse a cell_selector string into a (start, end) range.
+
+    Accepted syntax:
+      None / "all"  — all cells
+      "5"           — single cell at index 5  → (5, 6)
+      "3:8"         — cells 3 through 7 (exclusive end)
+      ":5"          — first 5 cells
+      "3:"          — cells 3 to end
+    """
+    if not selector or selector == "all":
+        return 0, count
+    if ":" not in selector:
+        idx = int(selector)
+        if idx < 0 or idx >= count:
+            raise ValueError(f"Cell index {idx} out of range (0..{count - 1})")
+        return idx, idx + 1
+    start_raw, end_raw = selector.split(":", 1)
+    start = int(start_raw) if start_raw else 0
+    end = int(end_raw) if end_raw else count
+    start = max(0, start)
+    end = min(count, end)
+    if start > end:
+        raise ValueError("Invalid cell_selector: start > end")
+    return start, end
+
+
 # ---------------------------------------------------------------------------
 # Filesystem implementation
 # ---------------------------------------------------------------------------
@@ -200,18 +227,7 @@ class FileNotebookStore(NotebookStore):
         raise ValueError(f"Unsupported cell_type {cell_type!r}")
 
     def _parse_cell_range(self, cell_range: Optional[str], count: int) -> tuple[int, int]:
-        if not cell_range:
-            return 0, count
-        if ":" not in cell_range:
-            raise ValueError("cell_range must be 'start:end'")
-        start_raw, end_raw = cell_range.split(":", 1)
-        start = int(start_raw) if start_raw else 0
-        end = int(end_raw) if end_raw else count
-        start = max(0, start)
-        end = min(count, end)
-        if start > end:
-            raise ValueError("Invalid cell_range: start > end")
-        return start, end
+        return parse_cell_selector(cell_range, count)
 
     def _format_saved_outputs(self, outputs: list, output_limit: int, include_images: bool = False) -> list:
         formatted: list[dict] = []

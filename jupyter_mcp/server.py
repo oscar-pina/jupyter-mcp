@@ -296,10 +296,9 @@ def read_notebook(
 
     Args:
         path: Notebook file path.
-        cell_selector: Optional `start:end` slice to limit returned cells (exclusive end,
-            e.g. '0:5' = first 5 cells). Only simple slices are supported here.
-            run_notebook's cell_selector additionally supports single index, `all`,
-            and comma-combinations like '1,3,5:9'.
+        cell_selector: Optional selector to limit returned cells. Supports `all`
+            (default), a single index (`5`), or a `start:end` slice (exclusive end,
+            e.g. `0:5` = first 5 cells). Same syntax as run_notebook.
         include_outputs: Include code cell outputs (default True).
         output_limit: Max characters per textual output in response.
         include_images: When True, include raw base64 image data. When False
@@ -580,7 +579,7 @@ def run_notebook(
         session_id: Existing session ID. Required when mode='session',
             ignored when mode='fresh'.
         cell_selector: Which cells to run. Supports: `all` (default), single index
-            (`5`), slice (`5:9`, exclusive end), or comma-combinations (`1,3,5:9`).
+            (`5`), or slice (`5:9`, exclusive end).
         timeout_s: Timeout per cell in seconds.
         stop_on_error: Stop at first execution error.
         wait_ms: Milliseconds to wait for an inline result. Default 0 means

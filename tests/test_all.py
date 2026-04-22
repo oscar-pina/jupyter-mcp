@@ -25,7 +25,7 @@ from jupyter_mcp import (
     _OUTPUT_TEXT_LIMIT,
 )
 from jupyter_mcp.kernel import SessionRecord
-from jupyter_mcp.notebooks import FileNotebookStore
+from jupyter_mcp.notebooks import FileNotebookStore, parse_cell_selector
 from jupyter_mcp.operations import OperationRecord, OperationManager
 from jupyter_mcp.orchestrator import ExecutionOrchestrator
 
@@ -486,41 +486,30 @@ class TestExecutionOrchestrator(unittest.TestCase):
         result = orch.run_code("sess_1", "print('hello')", 60, "interrupt", "full")
         self.assertEqual(result["stdout"], "hello")
 
-    def test_select_cells_all(self):
-        orch, _, _ = self._make_orchestrator({})
-        cells = [{"cell_type": "code"} for _ in range(5)]
-        indices = orch._select_cells(cells, None)
-        self.assertEqual(indices, [0, 1, 2, 3, 4])
+    def test_parse_cell_selector_all(self):
+        self.assertEqual(parse_cell_selector(None, 5), (0, 5))
 
-    def test_select_cells_all_keyword(self):
-        orch, _, _ = self._make_orchestrator({})
-        cells = [{"cell_type": "code"} for _ in range(3)]
-        indices = orch._select_cells(cells, "all")
-        self.assertEqual(indices, [0, 1, 2])
+    def test_parse_cell_selector_all_keyword(self):
+        self.assertEqual(parse_cell_selector("all", 3), (0, 3))
 
-    def test_select_cells_single(self):
-        orch, _, _ = self._make_orchestrator({})
-        cells = [{"cell_type": "code"} for _ in range(5)]
-        indices = orch._select_cells(cells, "2")
-        self.assertEqual(indices, [2])
+    def test_parse_cell_selector_single(self):
+        self.assertEqual(parse_cell_selector("2", 5), (2, 3))
 
-    def test_select_cells_range(self):
-        orch, _, _ = self._make_orchestrator({})
-        cells = [{"cell_type": "code"} for _ in range(10)]
-        indices = orch._select_cells(cells, "2:5")
-        self.assertEqual(indices, [2, 3, 4])
+    def test_parse_cell_selector_single_out_of_range(self):
+        with self.assertRaises(ValueError):
+            parse_cell_selector("99", 5)
 
-    def test_select_cells_comma(self):
-        orch, _, _ = self._make_orchestrator({})
-        cells = [{"cell_type": "code"} for _ in range(10)]
-        indices = orch._select_cells(cells, "1,3,5:7")
-        self.assertEqual(indices, [1, 3, 5, 6])
+    def test_parse_cell_selector_range(self):
+        self.assertEqual(parse_cell_selector("2:5", 10), (2, 5))
 
-    def test_select_cells_out_of_range_ignored(self):
-        orch, _, _ = self._make_orchestrator({})
-        cells = [{"cell_type": "code"} for _ in range(3)]
-        indices = orch._select_cells(cells, "0,99")
-        self.assertEqual(indices, [0])
+    def test_parse_cell_selector_open_start(self):
+        self.assertEqual(parse_cell_selector(":5", 10), (0, 5))
+
+    def test_parse_cell_selector_open_end(self):
+        self.assertEqual(parse_cell_selector("3:", 10), (3, 10))
+
+    def test_parse_cell_selector_clamps(self):
+        self.assertEqual(parse_cell_selector("0:99", 5), (0, 5))
 
 
 if __name__ == "__main__":

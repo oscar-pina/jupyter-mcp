@@ -10,7 +10,7 @@ from typing import Callable, Optional
 
 from jupyter_mcp import _parse_iopub_messages
 from jupyter_mcp.kernel import KernelProvider
-from jupyter_mcp.notebooks import NotebookStore
+from jupyter_mcp.notebooks import NotebookStore, parse_cell_selector
 
 
 class ExecutionOrchestrator:
@@ -78,7 +78,8 @@ class ExecutionOrchestrator:
             read_data = self.notebooks.read(path=path, cell_range=None, include_outputs=False, output_limit=20000)
             revision = read_data["revision"]
             cells = read_data["cells"]
-            selected = self._select_cells(cells, cell_selector)
+            start, end = parse_cell_selector(cell_selector, len(cells))
+            selected = list(range(start, end))
 
             total_code = sum(
                 1 for idx in selected
@@ -158,30 +159,3 @@ class ExecutionOrchestrator:
                 except Exception:
                     pass
 
-    def _select_cells(self, cells: list[dict], selector: Optional[str]) -> list[int]:
-        """Parse a cell_selector string into a sorted list of cell indices.
-
-        Supported syntax (combinable with commas):
-          ``all``     — all cells (default when None or "all")
-          ``5``       — single cell at index 5
-          ``5:9``     — slice from index 5 up to (excluding) 9
-          ``1,3,5:9`` — indices 1, 3, and 5 through 8
-        """
-        if not selector or selector == "all":
-            return list(range(len(cells)))
-
-        chosen: set[int] = set()
-        parts = [p.strip() for p in selector.split(",") if p.strip()]
-        for p in parts:
-            if ":" in p:
-                start_raw, end_raw = p.split(":", 1)
-                start = int(start_raw) if start_raw else 0
-                end = int(end_raw) if end_raw else len(cells)
-                for i in range(start, end):
-                    if 0 <= i < len(cells):
-                        chosen.add(i)
-            else:
-                idx = int(p)
-                if 0 <= idx < len(cells):
-                    chosen.add(idx)
-        return sorted(chosen)
