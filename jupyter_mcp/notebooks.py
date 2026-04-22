@@ -134,7 +134,11 @@ class FileNotebookStore(NotebookStore):
             if lock is None:
                 lock = threading.Lock()
                 if len(self._locks) >= self._MAX_LOCKS:
-                    self._locks.popitem(last=False)  # evict LRU
+                    # Only evict LRU if it is not currently held;
+                    # otherwise allow temporary over-capacity.
+                    _, lru_lock = next(iter(self._locks.items()))
+                    if not lru_lock.locked():
+                        self._locks.popitem(last=False)
                 self._locks[key] = lock
             else:
                 self._locks.move_to_end(key)
