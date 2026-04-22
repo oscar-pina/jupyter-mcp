@@ -285,8 +285,8 @@ def delete_notebook(path: str, expected_revision: str) -> dict:
 def read_notebook(
     path: str,
     cell_selector: Optional[str] = None,
-    include_outputs: bool = True,
-    output_limit: int = 20_000,
+    include_outputs: bool = False,
+    output_limit: int = 4_000,
     include_images: bool = False,
 ) -> dict:
     """Read notebook content with optional cell slicing and output inclusion.
@@ -299,8 +299,10 @@ def read_notebook(
         cell_selector: Optional selector to limit returned cells. Supports `all`
             (default), a single index (`5`), or a `start:end` slice (exclusive end,
             e.g. `0:5` = first 5 cells). Same syntax as run_notebook.
-        include_outputs: Include code cell outputs (default True).
-        output_limit: Max characters per textual output in response.
+        include_outputs: Include code cell outputs (default False).
+            Set to True when you need to inspect execution results.
+        output_limit: Max characters per textual output (default 4000).
+            Increase up to 20000 for large outputs like DataFrames.
         include_images: When True, include raw base64 image data. When False
             (default), images are replaced with size placeholders like
             '[base64 PNG, 1234 chars]'.

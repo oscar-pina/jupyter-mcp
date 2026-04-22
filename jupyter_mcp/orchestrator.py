@@ -87,19 +87,21 @@ class ExecutionOrchestrator:
             )
             results: list[dict] = []
             executed_count = 0
+            skipped_count = 0
 
             for idx in selected:
                 if is_cancelled is not None and is_cancelled():
                     return {
                         "status": "cancelled",
                         "cells_executed": executed_count,
+                        "cells_skipped": skipped_count,
                         "results": results,
                         "revision": revision,
                     }
 
                 cell = cells[idx]
                 if cell["cell_type"] != "code" or not str(cell.get("source", "")).strip():
-                    results.append({"index": idx, "skipped": True, "reason": "non-code or empty"})
+                    skipped_count += 1
                     continue
 
                 run = self.provider.execute(
@@ -141,6 +143,7 @@ class ExecutionOrchestrator:
                         "status": "error",
                         "stopped_at_cell": idx,
                         "cells_executed": executed_count,
+                        "cells_skipped": skipped_count,
                         "error": err,
                         "results": results,
                         "revision": revision,
@@ -149,6 +152,7 @@ class ExecutionOrchestrator:
             return {
                 "status": "completed",
                 "cells_executed": executed_count,
+                "cells_skipped": skipped_count,
                 "results": results,
                 "revision": revision,
             }

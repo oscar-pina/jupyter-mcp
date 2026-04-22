@@ -45,16 +45,20 @@ class OperationManager:
         self._reaper.start()
 
     def _snapshot(self, op: OperationRecord) -> dict:
-        out = {
+        out: dict = {
             "op_id": op.op_id,
             "kind": op.kind,
             "status": op.status,
             "submitted_at": op.submitted_at,
-            "started_at": op.started_at,
-            "ended_at": op.ended_at,
-            "result": op.result,
-            "error": op.error,
         }
+        if op.started_at is not None:
+            out["started_at"] = op.started_at
+        if op.ended_at is not None:
+            out["ended_at"] = op.ended_at
+        if op.result is not None:
+            out["result"] = op.result
+        if op.error is not None:
+            out["error"] = op.error
         if op.progress is not None:
             out["progress"] = op.progress
         if op.started_at and op.ended_at:
