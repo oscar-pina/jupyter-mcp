@@ -1,4 +1,4 @@
-"""FastMCP server entry point with all 21 MCP tool definitions.
+"""FastMCP server entry point with all 19 MCP tool definitions.
 
 Start with: python -m jupyter_mcp.server
 """
@@ -66,7 +66,6 @@ mcp = FastMCP(
         "On 'ExecutionError': check code syntax or use restart_session to reset.\n"
         "Operation statuses: queued → running → completed | failed | cancelled\n"
         "\n"
-        "Variable inspection (synchronous): get_variable, list_variables\n"
         "Kernel reset (keeps session_id): restart_session"
     ),
 )
@@ -98,37 +97,6 @@ def _validate_env(env: dict[str, str]) -> Optional[dict]:
             return _tool_error("SecurityError", f"Environment variable {key!r} is not permitted")
     return None
 
-
-# ---------------------------------------------------------------------------
-# Variable inspection code templates
-# ---------------------------------------------------------------------------
-
-_GET_VARIABLE_CODE = """\
-import json as _json
-_val = {name!r}
-try:
-    _v = eval(_val)
-    print(_json.dumps({{"name": _val, "value": repr(_v), "type": type(_v).__name__}}))
-except NameError:
-    print(_json.dumps({{"name": _val, "error": "not defined"}}))
-except Exception as _e:
-    print(_json.dumps({{"name": _val, "error": str(_e)}}))
-del _val, _json
-"""
-
-_LIST_VARIABLES_CODE = """\
-import json as _json
-_skip = {"__builtins__", "__name__", "__doc__", "__package__",
-         "__loader__", "__spec__", "__annotations__"}
-_rows = []
-_k = _v = None
-for _k, _v in list(vars().items()):
-    if _k.startswith("_") or _k in _skip:
-        continue
-    _rows.append({"name": _k, "type": type(_v).__name__, "repr": repr(_v)[:200]})
-print(_json.dumps(_rows))
-del _json, _skip, _rows, _k, _v
-"""
 
 # ---------------------------------------------------------------------------
 # MCP tools — Session management
@@ -658,77 +626,6 @@ def run_notebook(
     if "error" in snapshot or wait_ms <= 0:
         return snapshot
     return ops.get(op_id=snapshot["op_id"], wait_ms=wait_ms)
-
-
-# ---------------------------------------------------------------------------
-# MCP tools — Variable inspection
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool()
-def get_variable(session_id: str, name: str) -> dict:
-    """Inspect a variable or evaluate an expression in a running session (synchronous).
-
-    The name parameter is evaluated with eval() in the kernel, so it accepts
-    variable names, attribute access (e.g. "df.shape"), or expressions
-    (e.g. "len(my_list)").
-
-    Args:
-        session_id: Existing session ID.
-        name: Variable name or expression to inspect.
-
-    Returns:
-        Dict with `name`, `value` (repr), and `type`, or `error` if not defined.
-    """
-    import json as _json
-
-    code = _GET_VARIABLE_CODE.format(name=name)
-    try:
-        run = provider.execute(session_id=session_id, code=code, timeout_s=15, on_timeout="interrupt")
-    except KeyError as exc:
-        return _tool_error("NotFound", str(exc))
-    except Exception as exc:
-        return _tool_error("ExecutionError", str(exc))
-
-    stdout = (run.get("stdout") or "").strip()
-    if not stdout:
-        return _tool_error("ExecutionError", "No output from variable inspection")
-    try:
-        return _json.loads(stdout.splitlines()[-1])
-    except Exception:
-        return _tool_error("ExecutionError", f"Could not parse output: {stdout[:200]!r}")
-
-
-@mcp.tool()
-def list_variables(session_id: str) -> dict:
-    """List all user-defined variables in a running session (synchronous).
-
-    Returns a snapshot of the kernel's namespace, excluding private and
-    built-in names.
-
-    Args:
-        session_id: Existing session ID.
-
-    Returns:
-        Dict with `variables` list, each entry having `name`, `type`, `repr`.
-    """
-    import json as _json
-
-    try:
-        run = provider.execute(session_id=session_id, code=_LIST_VARIABLES_CODE, timeout_s=15, on_timeout="interrupt")
-    except KeyError as exc:
-        return _tool_error("NotFound", str(exc))
-    except Exception as exc:
-        return _tool_error("ExecutionError", str(exc))
-
-    stdout = (run.get("stdout") or "").strip()
-    if not stdout:
-        return {"variables": []}
-    try:
-        rows = _json.loads(stdout.splitlines()[-1])
-        return {"variables": rows}
-    except Exception:
-        return _tool_error("ExecutionError", f"Could not parse output: {stdout[:200]!r}")
 
 
 # ---------------------------------------------------------------------------

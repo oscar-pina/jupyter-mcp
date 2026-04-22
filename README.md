@@ -4,12 +4,11 @@ An agent-first MCP server for Jupyter execution and notebook operations.
 
 ## What it does
 
-`jupyter-mcp` exposes 21 tools to an AI agent via the [Model Context Protocol](https://modelcontextprotocol.io):
+`jupyter-mcp` exposes 19 tools to an AI agent via the [Model Context Protocol](https://modelcontextprotocol.io):
 
 - Create and manage kernel sessions (any Python interpreter)
 - Execute code and get results synchronously or poll asynchronously
 - Read and edit notebooks with optimistic concurrency (revision tokens)
-- Inspect live variables without consuming an operation slot
 - Run full notebooks and persist outputs back to the file
 
 ## Install
@@ -134,12 +133,6 @@ Notebook editing uses optimistic concurrency — every mutation requires the `re
 | `run_code` | Execute code in a session (async + optional inline wait) |
 | `run_notebook` | Execute notebook cells and persist outputs |
 
-### Variable inspection
-| Tool | Description |
-|------|-------------|
-| `get_variable` | Inspect a single variable (synchronous) |
-| `list_variables` | List all user-defined variables (synchronous) |
-
 ### Operation management
 | Tool | Description |
 |------|-------------|
@@ -151,7 +144,7 @@ Notebook editing uses optimistic concurrency — every mutation requires the `re
 ```
 jupyter_mcp/
 ├── __init__.py      Shared helpers and constants
-├── server.py        FastMCP instance + all 21 tool definitions
+├── server.py        FastMCP instance + all 19 tool definitions
 ├── kernel.py        KernelProvider ABC + LocalKernelProvider
 ├── notebooks.py     NotebookStore ABC + FileNotebookStore
 ├── operations.py    OperationRecord + OperationManager
