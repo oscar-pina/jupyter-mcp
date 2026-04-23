@@ -591,5 +591,167 @@ class TestExecutionOrchestrator(unittest.TestCase):
         self.assertEqual(parse_cell_selector("0:99", 5), (0, 5))
 
 
+# ---------------------------------------------------------------------------
+# Image content extraction (_to_mixed_content)
+# ---------------------------------------------------------------------------
+
+
+class TestImageContentExtraction(unittest.TestCase):
+
+    def setUp(self):
+        # Import here to avoid circular-import issues at module level
+        from jupyter_mcp.server import _to_mixed_content, _IMAGE_FIELDS
+        from mcp.types import TextContent, ImageContent
+        self._to_mixed_content = _to_mixed_content
+        self._IMAGE_FIELDS = _IMAGE_FIELDS
+        self.TextContent = TextContent
+        self.ImageContent = ImageContent
+
+    def _make_result(self, rich_outputs):
+        return {"status": "completed", "result": {"stdout": "", "rich_outputs": rich_outputs}}
+
+    def _get_output_dicts(self, result):
+        return result["result"]["rich_outputs"]
+
+    # --- PNG ---
+
+    def test_png_extracted(self):
+        result = self._make_result([{"type": "display_data", "image_png": "iVBOR=="}])
+        output_dicts = self._get_output_dicts(result)
+        blocks = self._to_mixed_content(result, output_dicts)
+        self.assertEqual(len(blocks), 2)
+        self.assertIsInstance(blocks[0], self.TextContent)
+        self.assertIsInstance(blocks[1], self.ImageContent)
+        self.assertEqual(blocks[1].mimeType, "image/png")
+        self.assertEqual(blocks[1].data, "iVBOR==")
+        # Placeholder in the serialized text
+        self.assertIn("image/png image: see content block #1", blocks[0].text)
+        self.assertNotIn("iVBOR==", blocks[0].text)
+
+    # --- JPEG ---
+
+    def test_jpeg_extracted(self):
+        result = self._make_result([{"type": "display_data", "image_jpeg": "/9j/data=="}])
+        output_dicts = self._get_output_dicts(result)
+        blocks = self._to_mixed_content(result, output_dicts)
+        self.assertEqual(len(blocks), 2)
+        self.assertIsInstance(blocks[1], self.ImageContent)
+        self.assertEqual(blocks[1].mimeType, "image/jpeg")
+        self.assertEqual(blocks[1].data, "/9j/data==")
+
+    # --- No images ---
+
+    def test_no_images_returns_single_text_block(self):
+        result = self._make_result([{"type": "stream", "text": "hello"}])
+        output_dicts = self._get_output_dicts(result)
+        blocks = self._to_mixed_content(result, output_dicts)
+        self.assertEqual(len(blocks), 1)
+        self.assertIsInstance(blocks[0], self.TextContent)
+
+    # --- Multiple images ---
+
+    def test_multiple_outputs_each_with_png(self):
+        result = self._make_result([
+            {"type": "display_data", "image_png": "img1=="},
+            {"type": "display_data", "image_png": "img2=="},
+        ])
+        output_dicts = self._get_output_dicts(result)
+        blocks = self._to_mixed_content(result, output_dicts)
+        self.assertEqual(len(blocks), 3)
+        self.assertEqual(blocks[1].data, "img1==")
+        self.assertEqual(blocks[2].data, "img2==")
+
+    # --- SVG not extracted ---
+
+    def test_svg_stays_in_text(self):
+        result = self._make_result([{"type": "display_data", "image_svg": "<svg/>"}])
+        output_dicts = self._get_output_dicts(result)
+        blocks = self._to_mixed_content(result, output_dicts)
+        self.assertEqual(len(blocks), 1)
+        self.assertIn("<svg/>", blocks[0].text)
+
+    # --- Placeholder guard ---
+
+    def test_placeholder_not_reprocessed(self):
+        result = self._make_result([{"type": "display_data", "image_png": "[base64 PNG, 1234 chars]"}])
+        output_dicts = self._get_output_dicts(result)
+        blocks = self._to_mixed_content(result, output_dicts)
+        self.assertEqual(len(blocks), 1)
+        # placeholder value is preserved as-is in the text
+        self.assertIn("[base64 PNG, 1234 chars]", blocks[0].text)
+
+    # --- Mixed PNG + JPEG in one output ---
+
+    def test_mixed_png_and_jpeg(self):
+        result = self._make_result([{"type": "display_data", "image_png": "png==", "image_jpeg": "jpg=="}])
+        output_dicts = self._get_output_dicts(result)
+        blocks = self._to_mixed_content(result, output_dicts)
+        self.assertEqual(len(blocks), 3)
+        mime_types = {b.mimeType for b in blocks[1:]}
+        self.assertEqual(mime_types, {"image/png", "image/jpeg"})
+
+    # --- run_code result shape ---
+
+    def test_run_code_result_shape(self):
+        # Simulates the full operation snapshot from ops.get()
+        result = {
+            "op_id": "op_abc",
+            "kind": "run_code",
+            "status": "completed",
+            "submitted_at": 1.0,
+            "result": {
+                "stdout": "hello",
+                "stderr": "",
+                "error": None,
+                "execution_count": 1,
+                "rich_outputs": [{"type": "display_data", "image_png": "pngdata=="}],
+            },
+        }
+        output_dicts = result["result"]["rich_outputs"]
+        blocks = self._to_mixed_content(result, output_dicts)
+        self.assertEqual(len(blocks), 2)
+        self.assertEqual(blocks[1].mimeType, "image/png")
+        # Verify TextContent has the full structure with placeholder
+        parsed = json.loads(blocks[0].text)
+        self.assertEqual(parsed["op_id"], "op_abc")
+        self.assertIn("image/png image: see content block #1", parsed["result"]["rich_outputs"][0]["image_png"])
+
+    # --- read_notebook result shape ---
+
+    def test_read_notebook_result_shape(self):
+        # Simulates the dict returned by notebooks.read()
+        result = {
+            "path": "/some/notebook.ipynb",
+            "revision": "abc123",
+            "cells": [
+                {
+                    "index": 0,
+                    "cell_type": "code",
+                    "source": "plot()",
+                    "outputs": [
+                        {"type": "display_data", "image_png": "pngdata=="},
+                    ],
+                }
+            ],
+        }
+        output_dicts = []
+        for cell in result.get("cells", []):
+            output_dicts.extend(cell.get("outputs", []))
+        blocks = self._to_mixed_content(result, output_dicts)
+        self.assertEqual(len(blocks), 2)
+        self.assertEqual(blocks[1].mimeType, "image/png")
+        parsed = json.loads(blocks[0].text)
+        self.assertEqual(parsed["revision"], "abc123")
+        self.assertNotIn("pngdata==", blocks[0].text)
+
+    # --- Empty output_dicts ---
+
+    def test_empty_output_dicts(self):
+        result = {"status": "completed"}
+        blocks = self._to_mixed_content(result, [])
+        self.assertEqual(len(blocks), 1)
+        self.assertIsInstance(blocks[0], self.TextContent)
+
+
 if __name__ == "__main__":
     unittest.main()

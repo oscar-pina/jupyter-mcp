@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import atexit
 import dataclasses
+import json
 import signal
 from typing import Any, Optional
+
+from mcp.types import TextContent, ImageContent
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -104,6 +107,34 @@ def _raise_on_op_error(result: dict) -> dict:
         err = result["error"]
         raise ToolError(f"[{err['code']}] {err['message']}")
     return result
+
+
+# ---------------------------------------------------------------------------
+# Image content helpers
+# ---------------------------------------------------------------------------
+
+_IMAGE_FIELDS = {"image_png": "image/png", "image_jpeg": "image/jpeg"}
+
+
+def _to_mixed_content(result: dict, output_dicts: list[dict]) -> list:
+    """Replace image fields in output_dicts with placeholders, return [TextContent, *ImageContent].
+
+    Mutates each dict in output_dicts: replaces image_png/image_jpeg values with
+    placeholder strings before serializing result to JSON. Returns a list starting
+    with one TextContent (the cleaned JSON) followed by ImageContent blocks.
+    If no extractable images are found, returns [TextContent] only.
+    SVG (image_svg) is intentionally excluded — stays in the JSON text.
+    """
+    images: list[ImageContent] = []
+    n = 0
+    for out in output_dicts:
+        for field, mime in _IMAGE_FIELDS.items():
+            val = out.get(field)
+            if val and not val.startswith("["):
+                n += 1
+                images.append(ImageContent(type="image", data=val, mimeType=mime))
+                out[field] = f"[{mime} image: see content block #{n}]"
+    return [TextContent(type="text", text=json.dumps(result)), *images]
 
 
 # ---------------------------------------------------------------------------
@@ -330,7 +361,7 @@ def read_notebook(
     include_outputs: bool = False,
     output_limit: int = 4_000,
     include_images: bool = False,
-) -> dict:
+) -> dict | list:
     """Read notebook content with optional cell range and output inclusion.
 
     Returns a `revision` token needed for all subsequent notebook mutations.
@@ -353,7 +384,7 @@ def read_notebook(
         Notebook payload including `revision` for optimistic updates.
     """
     try:
-        return notebooks.read(
+        result = notebooks.read(
             path,
             cell_start=cell_start,
             cell_end=cell_end,
@@ -367,6 +398,13 @@ def read_notebook(
         raise ToolError(f"[ValidationError] {exc}") from exc
     except Exception as exc:
         raise ToolError(f"[ExecutionError] {exc}") from exc
+    if include_images:
+        output_dicts: list[dict] = []
+        for cell in result.get("cells", []):
+            output_dicts.extend(cell.get("outputs", []))
+        if output_dicts:
+            return _to_mixed_content(result, output_dicts)
+    return result
 
 
 @mcp.tool()
@@ -422,7 +460,7 @@ def run_code(
     timeout_s: int = 60,
     wait_ms: int = 5000,
     include_images: bool = False,
-) -> dict:
+) -> dict | list:
     """Execute code in an existing session, optionally waiting for inline results.
 
     When wait_ms > 0 (default 5000ms), waits up to that duration for the result.
@@ -451,10 +489,17 @@ def run_code(
     def _cancel_cb() -> None:
         provider.interrupt(session_id)
 
-    snapshot = _raise_on_op_error(ops.submit(kind="run_code", fn=_job, cancel_callback=_cancel_cb))
+    meta = {"include_images": True} if include_images else None
+    snapshot = _raise_on_op_error(ops.submit(kind="run_code", fn=_job, cancel_callback=_cancel_cb, metadata=meta))
     if wait_ms <= 0:
         return snapshot
-    return _raise_on_op_error(ops.get(op_id=snapshot["op_id"], wait_ms=wait_ms))
+    result = _raise_on_op_error(ops.get(op_id=snapshot["op_id"], wait_ms=wait_ms))
+    if include_images and result.get("status") == "completed":
+        inner = result.get("result") or {}
+        output_dicts = inner.get("rich_outputs", [])
+        if output_dicts:
+            return _to_mixed_content(result, output_dicts)
+    return result
 
 
 @mcp.tool()
@@ -539,7 +584,7 @@ def run_notebook(
 
 
 @mcp.tool()
-def get_operation(op_id: str, wait_ms: int = 0) -> dict:
+def get_operation(op_id: str, wait_ms: int = 0) -> dict | list:
     """Get operation state and result.
 
     Args:
@@ -549,14 +594,23 @@ def get_operation(op_id: str, wait_ms: int = 0) -> dict:
             current snapshot regardless. 0 = immediate non-blocking check.
 
     Returns:
-        Operation snapshot.
+        Operation snapshot. When the original run_code was submitted with
+        include_images=True and the operation has completed, returns a mixed
+        content list [TextContent, *ImageContent] instead of a plain dict.
     """
     try:
-        return _raise_on_op_error(ops.get(op_id=op_id, wait_ms=wait_ms))
+        result = _raise_on_op_error(ops.get(op_id=op_id, wait_ms=wait_ms))
     except ToolError:
         raise
     except Exception as exc:
         raise ToolError(f"[ExecutionError] {exc}") from exc
+    meta = result.get("metadata") or {}
+    if meta.get("include_images") and result.get("status") == "completed":
+        inner = result.get("result") or {}
+        output_dicts = inner.get("rich_outputs", [])
+        if output_dicts:
+            return _to_mixed_content(result, output_dicts)
+    return result
 
 
 @mcp.tool()

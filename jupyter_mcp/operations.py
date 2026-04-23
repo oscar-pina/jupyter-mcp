@@ -28,6 +28,7 @@ class OperationRecord:
     cancelled: bool = False
     cancel_callback: Optional[Any] = None
     progress: Optional[dict] = None
+    metadata: Optional[dict] = None
 
 
 class OperationManager:
@@ -61,6 +62,8 @@ class OperationManager:
             out["error"] = op.error
         if op.progress is not None:
             out["progress"] = op.progress
+        if op.metadata is not None:
+            out["metadata"] = op.metadata
         if op.started_at and op.ended_at:
             out["timings"] = {"duration_ms": round((op.ended_at - op.started_at) * 1000, 2)}
         return out
@@ -79,7 +82,7 @@ class OperationManager:
                     self._ops.pop(op_id, None)
                     self._futures.pop(op_id, None)
 
-    def submit(self, kind: str, fn: Any, cancel_callback: Optional[Any] = None) -> dict:
+    def submit(self, kind: str, fn: Any, cancel_callback: Optional[Any] = None, metadata: Optional[dict] = None) -> dict:
         # All mutation (op creation, future storage, snapshot) happens inside a single lock
         # acquisition so get() can never observe a missing future for a known op_id.
         with self._lock:
@@ -88,7 +91,7 @@ class OperationManager:
                 return _tool_error("Busy", "Too many in-flight operations", {"max_inflight": self._max_inflight})
 
             op_id = _new_id("op")
-            rec = OperationRecord(op_id=op_id, kind=kind, status="queued", submitted_at=_utc_now())
+            rec = OperationRecord(op_id=op_id, kind=kind, status="queued", submitted_at=_utc_now(), metadata=metadata)
             rec.cancel_callback = cancel_callback
             self._ops[op_id] = rec
 
