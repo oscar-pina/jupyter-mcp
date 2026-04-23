@@ -485,6 +485,86 @@ class TestExecutionOrchestrator(unittest.TestCase):
         result = orch.run_code("sess_1", "print('hello')", 60, "full")
         self.assertEqual(result["stdout"], "hello")
 
+    def test_run_notebook_fresh_uses_notebook_parent_as_cwd(self):
+        provider = MagicMock()
+        provider.create_session.return_value = SessionRecord(
+            session_id="sess_fresh",
+            python_path="python",
+            isolation="ephemeral",
+            cwd="/tmp",
+            created_at=1.0,
+            last_used_at=1.0,
+        )
+        provider.execute.return_value = {
+            "stdout": "",
+            "stderr": "",
+            "rich_outputs": [],
+            "error": None,
+            "truncated": False,
+            "execution_count": 1,
+            "_raw_messages": [],
+        }
+        nb_store = MagicMock()
+        nb_store.read.return_value = {
+            "path": "/tmp/project/notebooks/demo.ipynb",
+            "revision": "rev1",
+            "cells": [{"cell_type": "code", "source": "print('x')"}],
+        }
+        nb_store.write_execution_cell.return_value = {"revision": "rev2", "cell_index": 0}
+        orch = ExecutionOrchestrator(provider, nb_store)
+
+        result = orch.run_notebook(path="/tmp/project/notebooks/demo.ipynb", mode="fresh")
+
+        self.assertEqual(result["status"], "completed")
+        provider.create_session.assert_called_once_with(
+            python_path="python",
+            cwd="/tmp/project/notebooks",
+            isolation="ephemeral",
+        )
+        provider.close_session.assert_called_once_with("sess_fresh", force=True)
+        self.assertEqual(nb_store.read.call_count, 1)
+
+    def test_run_notebook_session_does_not_create_new_session(self):
+        provider = MagicMock()
+        provider.list_sessions.return_value = [
+            SessionRecord(
+                session_id="sess_existing",
+                python_path="python",
+                isolation="persistent",
+                cwd="/tmp/project",
+                created_at=1.0,
+                last_used_at=1.0,
+            )
+        ]
+        provider.execute.return_value = {
+            "stdout": "",
+            "stderr": "",
+            "rich_outputs": [],
+            "error": None,
+            "truncated": False,
+            "execution_count": 1,
+            "_raw_messages": [],
+        }
+        nb_store = MagicMock()
+        nb_store.read.return_value = {
+            "path": "/tmp/project/notebooks/demo.ipynb",
+            "revision": "rev1",
+            "cells": [{"cell_type": "code", "source": "print('x')"}],
+        }
+        nb_store.write_execution_cell.return_value = {"revision": "rev2", "cell_index": 0}
+        orch = ExecutionOrchestrator(provider, nb_store)
+
+        result = orch.run_notebook(
+            path="/tmp/project/notebooks/demo.ipynb",
+            mode="session",
+            target_session_id="sess_existing",
+        )
+
+        self.assertEqual(result["status"], "completed")
+        provider.create_session.assert_not_called()
+        provider.close_session.assert_not_called()
+        provider.list_sessions.assert_called_once()
+
     def test_parse_cell_selector_all(self):
         self.assertEqual(parse_cell_selector(None, 5), (0, 5))
 

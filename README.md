@@ -4,7 +4,7 @@ An agent-first MCP server for Jupyter execution and notebook operations.
 
 ## What it does
 
-`jupyter-mcp` exposes 19 tools to an AI agent via the [Model Context Protocol](https://modelcontextprotocol.io):
+`jupyter-mcp` exposes 16 tools to an AI agent via the [Model Context Protocol](https://modelcontextprotocol.io):
 
 - Create and manage kernel sessions (any Python interpreter)
 - Execute code and get results synchronously or poll asynchronously
@@ -108,24 +108,20 @@ Notebook editing uses optimistic concurrency — every mutation requires the `re
 | Tool | Description |
 |------|-------------|
 | `create_session` | Start a kernel session |
-| `get_session` | Get session by ID |
 | `list_sessions` | List all active sessions |
 | `close_session` | Shut down a session |
 | `restart_session` | Restart kernel, keeping session ID |
+| `interrupt_session` | Interrupt current execution without resetting state |
 
 ### Notebook operations
 | Tool | Description |
 |------|-------------|
 | `list_notebooks` | Recursively list `.ipynb` files |
 | `create_notebook` | Create a new empty notebook |
+| `rename_notebook` | Rename or move notebook (revision-guarded) |
 | `delete_notebook` | Delete (revision-guarded) |
 | `read_notebook` | Read cells and outputs; returns revision |
-| `insert_cell` | Insert a cell at index |
-| `update_cell` | Update cell source |
-| `delete_cell` | Delete cell by index |
-| `move_cell` | Move cell to new index |
-| `clear_outputs` | Clear one or all code cell outputs |
-| `batch_cells` | Atomic multi-cell insert/update/delete |
+| `edit_notebook` | Atomic insert/update/delete cell operations |
 
 ### Execution
 | Tool | Description |
@@ -138,13 +134,14 @@ Notebook editing uses optimistic concurrency — every mutation requires the `re
 |------|-------------|
 | `get_operation` | Poll operation status / wait for result |
 | `cancel_operation` | Request cancellation |
+| `list_operations` | List all tracked operations |
 
 ## Architecture
 
 ```
 jupyter_mcp/
 ├── __init__.py      Shared helpers and constants
-├── server.py        FastMCP instance + all 19 tool definitions
+├── server.py        FastMCP instance + all 16 tool definitions
 ├── kernel.py        KernelProvider ABC + LocalKernelProvider
 ├── notebooks.py     NotebookStore ABC + FileNotebookStore
 ├── operations.py    OperationRecord + OperationManager

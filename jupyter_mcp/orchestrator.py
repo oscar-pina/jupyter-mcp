@@ -6,6 +6,7 @@ NotebookStore, and OperationManager to run code and full notebooks.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable, Optional
 
 from jupyter_mcp import _parse_iopub_messages
@@ -55,6 +56,7 @@ class ExecutionOrchestrator:
     ) -> dict:
         session_id: Optional[str] = None
         created_temp = False
+        preloaded_read: Optional[dict] = None
 
         if mode == "session":
             if target_session_id is None:
@@ -64,7 +66,14 @@ class ExecutionOrchestrator:
                 raise KeyError(f"Session {target_session_id!r} not found")
             session_id = target_session_id
         elif mode == "fresh":
-            rec = self.provider.create_session(python_path=python_path, isolation="ephemeral")
+            # Read first so we can anchor CWD to the notebook directory.
+            preloaded_read = self.notebooks.read(path=path, include_outputs=False, output_limit=20000)
+            notebook_dir = str(Path(preloaded_read["path"]).parent)
+            rec = self.provider.create_session(
+                python_path=python_path,
+                cwd=notebook_dir,
+                isolation="ephemeral",
+            )
             session_id = rec.session_id
             created_temp = True
         else:
@@ -76,7 +85,11 @@ class ExecutionOrchestrator:
             on_session_ready(session_id)
 
         try:
-            read_data = self.notebooks.read(path=path, include_outputs=False, output_limit=20000)
+            read_data = preloaded_read or self.notebooks.read(
+                path=path,
+                include_outputs=False,
+                output_limit=20000,
+            )
             revision = read_data["revision"]
             cells = read_data["cells"]
             count = len(cells)
@@ -165,4 +178,3 @@ class ExecutionOrchestrator:
                     self.provider.close_session(session_id, force=True)
                 except Exception:
                     pass
-
