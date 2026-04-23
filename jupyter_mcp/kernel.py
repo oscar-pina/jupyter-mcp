@@ -35,7 +35,6 @@ class SessionRecord:
     created_at: float
     last_used_at: float
     state: str = "ready"
-    active_op_id: Optional[str] = None
 
 
 @dataclasses.dataclass

@@ -1,4 +1,4 @@
-"""FastMCP server entry point with all 19 MCP tool definitions.
+"""FastMCP server entry point with all MCP tool definitions.
 
 Start with: python -m jupyter_mcp.server
 """
@@ -7,13 +7,12 @@ from __future__ import annotations
 
 import atexit
 import dataclasses
-import json
 import signal
 from typing import Any, Optional
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 
-from jupyter_mcp import _tool_error
 from jupyter_mcp.kernel import LocalKernelProvider
 from jupyter_mcp.notebooks import FileNotebookStore
 from jupyter_mcp.operations import OperationManager
@@ -53,20 +52,21 @@ mcp = FastMCP(
         "  mode='fresh': disposable isolated kernel (reproducible). Default.\n"
         "  mode='session': reuse an existing stateful session (pass session_id).\n"
         "\n"
-        "Notebook editing uses optimistic concurrency: every mutation (insert_cell,\n"
-        "update_cell, delete_cell, move_cell, clear_outputs, batch_cells,\n"
+        "Notebook editing uses optimistic concurrency: every mutation (edit_notebook,\n"
         "delete_notebook) requires a base_revision token from read_notebook.\n"
-        "On conflict (file changed externally), the tool returns error code\n"
-        "'Conflict' — re-read to get the latest revision and retry.\n"
+        "Re-read to get the new revision after any mutation — each mutation returns it.\n"
         "\n"
-        "Error format: {\"error\": {\"code\": \"...\", \"message\": \"...\", \"details\": ...}}\n"
-        "(details field is optional)\n"
-        "On 'Conflict': re-read the notebook and retry with the new revision.\n"
-        "On 'NotFound': verify the session_id or file path.\n"
-        "On 'ExecutionError': check code syntax or use restart_session to reset.\n"
+        "Errors are raised as tool errors. Error codes in the message prefix:\n"
+        "  [Conflict]        — notebook changed externally; re-read and retry\n"
+        "  [NotFound]        — verify session_id or file path\n"
+        "  [ValidationError] — fix the parameter value\n"
+        "  [ExecutionError]  — check code syntax or use restart_session to reset\n"
+        "  [SecurityError]   — disallowed operation (e.g. env variable blocked)\n"
+        "  [Busy]            — too many in-flight operations; wait and retry\n"
+        "\n"
         "Operation statuses: queued → running → completed | failed | cancelled\n"
-        "\n"
-        "Kernel reset (keeps session_id): restart_session"
+        "Kernel reset (keeps session_id): restart_session\n"
+        "Interrupt without reset: interrupt_session"
     ),
 )
 
@@ -90,16 +90,24 @@ _ENV_DENIED: frozenset[str] = frozenset({"LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_
 _ENV_DENIED_PREFIXES: tuple[str, ...] = ("LD_", "DYLD_")
 
 
-def _validate_env(env: dict[str, str]) -> Optional[dict]:
+def _validate_env(env: dict[str, str]) -> None:
+    """Raise ToolError if env contains a disallowed variable."""
     for key in env:
         ku = key.upper()
         if ku in _ENV_DENIED or any(ku.startswith(p) for p in _ENV_DENIED_PREFIXES):
-            return _tool_error("SecurityError", f"Environment variable {key!r} is not permitted")
-    return None
+            raise ToolError(f"[SecurityError] Environment variable {key!r} is not permitted")
+
+
+def _raise_on_op_error(result: dict) -> dict:
+    """If an ops method returned an in-band error dict, raise ToolError."""
+    if "error" in result:
+        err = result["error"]
+        raise ToolError(f"[{err['code']}] {err['message']}")
+    return result
 
 
 # ---------------------------------------------------------------------------
-# MCP tools — Session management
+# MCP tools — Session management (5 tools)
 # ---------------------------------------------------------------------------
 
 
@@ -127,35 +135,16 @@ def create_session(
         Session descriptor with session_id, python_path, cwd, created_at.
     """
     if isolation not in {"ephemeral", "persistent"}:
-        return _tool_error("ValidationError", "isolation must be 'ephemeral' or 'persistent'")
+        raise ToolError("[ValidationError] isolation must be 'ephemeral' or 'persistent'")
     if env:
-        err = _validate_env(env)
-        if err:
-            return err
+        _validate_env(env)
     try:
         rec = provider.create_session(python_path=python_path, cwd=cwd, env=env, isolation=isolation)
         return dataclasses.asdict(rec)
+    except ToolError:
+        raise
     except Exception as exc:
-        return _tool_error("ExecutionError", str(exc))
-
-
-@mcp.tool()
-def get_session(session_id: str) -> dict:
-    """Get one session by ID.
-
-    Args:
-        session_id: Session identifier.
-
-    Returns:
-        Session descriptor.
-    """
-    try:
-        rec = provider.get_session(session_id)
-        return dataclasses.asdict(rec)
-    except KeyError as exc:
-        return _tool_error("NotFound", str(exc))
-    except Exception as exc:
-        return _tool_error("ExecutionError", str(exc))
+        raise ToolError(f"[ExecutionError] {exc}") from exc
 
 
 @mcp.tool()
@@ -163,12 +152,12 @@ def list_sessions() -> dict:
     """List all active sessions.
 
     Returns:
-        Dict with `sessions` list.
+        Dict with `sessions` list of session descriptors.
     """
     try:
         return {"sessions": [dataclasses.asdict(s) for s in provider.list_sessions()]}
     except Exception as exc:
-        return _tool_error("ExecutionError", str(exc))
+        raise ToolError(f"[ExecutionError] {exc}") from exc
 
 
 @mcp.tool()
@@ -186,9 +175,9 @@ def close_session(session_id: str, force: bool = False) -> dict:
         provider.close_session(session_id, force=force)
         return {"status": "closed", "session_id": session_id, "force": force}
     except KeyError as exc:
-        return _tool_error("NotFound", str(exc))
+        raise ToolError(f"[NotFound] {exc}") from exc
     except Exception as exc:
-        return _tool_error("ExecutionError", str(exc))
+        raise ToolError(f"[ExecutionError] {exc}") from exc
 
 
 @mcp.tool()
@@ -208,13 +197,38 @@ def restart_session(session_id: str) -> dict:
         provider.restart(session_id)
         return {"status": "restarted", "session_id": session_id}
     except KeyError as exc:
-        return _tool_error("NotFound", str(exc))
+        raise ToolError(f"[NotFound] {exc}") from exc
     except Exception as exc:
-        return _tool_error("ExecutionError", str(exc))
+        raise ToolError(f"[ExecutionError] {exc}") from exc
+
+
+@mcp.tool()
+def interrupt_session(session_id: str) -> dict:
+    """Interrupt a running kernel execution without clearing session state.
+
+    Sends an interrupt signal to the kernel, stopping any currently running
+    cell. All previously defined variables and imports remain intact — the
+    session stays fully usable after the interrupt. Use this instead of
+    restart_session when you want to stop a long-running cell but keep
+    the existing execution context.
+
+    Args:
+        session_id: Session identifier from create_session.
+
+    Returns:
+        Status payload.
+    """
+    try:
+        provider.interrupt(session_id)
+        return {"status": "interrupted", "session_id": session_id}
+    except KeyError as exc:
+        raise ToolError(f"[NotFound] {exc}") from exc
+    except Exception as exc:
+        raise ToolError(f"[ExecutionError] {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
-# MCP tools — Notebook operations
+# MCP tools — Notebook operations (6 tools)
 # ---------------------------------------------------------------------------
 
 
@@ -232,13 +246,13 @@ def list_notebooks(directory: str = ".") -> dict:
     try:
         return notebooks.list_notebooks(directory)
     except FileNotFoundError as exc:
-        return _tool_error("NotFound", str(exc))
+        raise ToolError(f"[NotFound] {exc}") from exc
     except PermissionError as exc:
-        return _tool_error("SecurityError", str(exc))
+        raise ToolError(f"[SecurityError] {exc}") from exc
     except ValueError as exc:
-        return _tool_error("ValidationError", str(exc))
+        raise ToolError(f"[ValidationError] {exc}") from exc
     except Exception as exc:
-        return _tool_error("ExecutionError", str(exc))
+        raise ToolError(f"[ExecutionError] {exc}") from exc
 
 
 @mcp.tool()
@@ -255,50 +269,78 @@ def create_notebook(path: str, kernel_name: str = "python3") -> dict:
     try:
         return notebooks.create_notebook(path, kernel_name)
     except FileExistsError as exc:
-        return _tool_error("Conflict", str(exc))
+        raise ToolError(f"[Conflict] {exc}") from exc
     except Exception as exc:
-        return _tool_error("ExecutionError", str(exc))
+        raise ToolError(f"[ExecutionError] {exc}") from exc
 
 
 @mcp.tool()
-def delete_notebook(path: str, expected_revision: str) -> dict:
+def rename_notebook(path: str, new_path: str, base_revision: str) -> dict:
+    """Rename or move a notebook file.
+
+    Atomically renames the notebook file. The destination must not already exist.
+    Requires a base_revision to guard against renaming a stale file.
+
+    Args:
+        path: Current notebook path.
+        new_path: Destination path (can move across directories).
+        base_revision: Latest revision from read_notebook.
+
+    Returns:
+        Status payload with old_path, new path, and new revision.
+    """
+    try:
+        return notebooks.rename_notebook(path, new_path, base_revision)
+    except FileNotFoundError as exc:
+        raise ToolError(f"[NotFound] {exc}") from exc
+    except FileExistsError as exc:
+        raise ToolError(f"[Conflict] {exc}") from exc
+    except RuntimeError as exc:
+        raise ToolError(f"[Conflict] {exc}") from exc
+    except Exception as exc:
+        raise ToolError(f"[ExecutionError] {exc}") from exc
+
+
+@mcp.tool()
+def delete_notebook(path: str, base_revision: str) -> dict:
     """Delete a notebook, guarded by revision.
 
     Args:
         path: Notebook path.
-        expected_revision: Latest notebook revision from read_notebook.
+        base_revision: Latest notebook revision from read_notebook.
 
     Returns:
         Deletion status.
     """
     try:
-        return notebooks.delete_notebook(path, expected_revision)
+        return notebooks.delete_notebook(path, base_revision)
     except FileNotFoundError as exc:
-        return _tool_error("NotFound", str(exc))
+        raise ToolError(f"[NotFound] {exc}") from exc
     except RuntimeError as exc:
-        return _tool_error("Conflict", str(exc))
+        raise ToolError(f"[Conflict] {exc}") from exc
     except Exception as exc:
-        return _tool_error("ExecutionError", str(exc))
+        raise ToolError(f"[ExecutionError] {exc}") from exc
 
 
 @mcp.tool()
 def read_notebook(
     path: str,
-    cell_selector: Optional[str] = None,
+    cell_start: Optional[int] = None,
+    cell_end: Optional[int] = None,
     include_outputs: bool = False,
     output_limit: int = 4_000,
     include_images: bool = False,
 ) -> dict:
-    """Read notebook content with optional cell slicing and output inclusion.
+    """Read notebook content with optional cell range and output inclusion.
 
     Returns a `revision` token needed for all subsequent notebook mutations.
-    Re-read the notebook whenever you get a 'Conflict' error to get the latest revision.
+    Re-read the notebook whenever you get a Conflict error to get the latest revision.
 
     Args:
         path: Notebook file path.
-        cell_selector: Optional selector to limit returned cells. Supports `all`
-            (default), a single index (`5`), or a `start:end` slice (exclusive end,
-            e.g. `0:5` = first 5 cells). Same syntax as run_notebook.
+        cell_start: First cell index to include (default 0 = from the start).
+        cell_end: Exclusive end index (default = cell_count = to the end).
+            E.g. cell_start=0, cell_end=5 returns the first 5 cells.
         include_outputs: Include code cell outputs (default False).
             Set to True when you need to inspect execution results.
         output_limit: Max characters per textual output (default 4000).
@@ -311,167 +353,37 @@ def read_notebook(
         Notebook payload including `revision` for optimistic updates.
     """
     try:
-        return notebooks.read(path, cell_selector, include_outputs, output_limit, include_images=include_images)
+        return notebooks.read(
+            path,
+            cell_start=cell_start,
+            cell_end=cell_end,
+            include_outputs=include_outputs,
+            output_limit=output_limit,
+            include_images=include_images,
+        )
     except FileNotFoundError as exc:
-        return _tool_error("NotFound", str(exc))
+        raise ToolError(f"[NotFound] {exc}") from exc
     except ValueError as exc:
-        return _tool_error("ValidationError", str(exc))
+        raise ToolError(f"[ValidationError] {exc}") from exc
     except Exception as exc:
-        return _tool_error("ExecutionError", str(exc))
+        raise ToolError(f"[ExecutionError] {exc}") from exc
 
 
 @mcp.tool()
-def insert_cell(
-    path: str,
-    base_revision: str,
-    index: int,
-    cell_type: str,
-    source: str,
-) -> dict:
-    """Insert a cell at a specific index.
+def edit_notebook(path: str, base_revision: str, operations: list) -> dict:
+    """Apply one or more cell operations atomically under a single revision.
 
-    Args:
-        path: Notebook path.
-        base_revision: Revision returned by read_notebook.
-        index: Insert position (0..cell_count).
-        cell_type: One of `code`, `markdown`, `raw`.
-        source: Cell source content.
-
-    Returns:
-        Mutation status with new revision.
-    """
-    try:
-        return notebooks.insert_cell(path, base_revision, index, cell_type, source)
-    except FileNotFoundError as exc:
-        return _tool_error("NotFound", str(exc))
-    except RuntimeError as exc:
-        return _tool_error("Conflict", str(exc))
-    except (ValueError, IndexError) as exc:
-        return _tool_error("ValidationError", str(exc))
-    except Exception as exc:
-        return _tool_error("ExecutionError", str(exc))
-
-
-@mcp.tool()
-def update_cell(
-    path: str,
-    base_revision: str,
-    cell_index: int,
-    source: str,
-    reset_outputs: bool = True,
-) -> dict:
-    """Update a cell source.
-
-    Args:
-        path: Notebook path.
-        base_revision: Revision returned by read_notebook.
-        cell_index: Target cell index.
-        source: New source content.
-        reset_outputs: For code cells, clear outputs and execution_count when true.
-
-    Returns:
-        Mutation status with new revision.
-    """
-    try:
-        return notebooks.update_cell(path, base_revision, cell_index, source, reset_outputs)
-    except FileNotFoundError as exc:
-        return _tool_error("NotFound", str(exc))
-    except RuntimeError as exc:
-        return _tool_error("Conflict", str(exc))
-    except (ValueError, IndexError) as exc:
-        return _tool_error("ValidationError", str(exc))
-    except Exception as exc:
-        return _tool_error("ExecutionError", str(exc))
-
-
-@mcp.tool()
-def delete_cell(path: str, base_revision: str, cell_index: int) -> dict:
-    """Delete a cell by index.
-
-    Args:
-        path: Notebook path.
-        base_revision: Revision returned by read_notebook.
-        cell_index: Cell index to remove.
-
-    Returns:
-        Mutation status with new revision.
-    """
-    try:
-        return notebooks.delete_cell(path, base_revision, cell_index)
-    except FileNotFoundError as exc:
-        return _tool_error("NotFound", str(exc))
-    except RuntimeError as exc:
-        return _tool_error("Conflict", str(exc))
-    except (ValueError, IndexError) as exc:
-        return _tool_error("ValidationError", str(exc))
-    except Exception as exc:
-        return _tool_error("ExecutionError", str(exc))
-
-
-@mcp.tool()
-def move_cell(path: str, base_revision: str, from_index: int, to_index: int) -> dict:
-    """Move a cell from one index to another.
-
-    Args:
-        path: Notebook path.
-        base_revision: Revision returned by read_notebook.
-        from_index: Current cell index.
-        to_index: Destination index. Valid range: 0 to cell_count inclusive.
-            E.g. to move cell 0 to the end of a 5-cell notebook,
-            from_index=0 with to_index=4 or to_index=5 both work.
-
-    Returns:
-        Mutation status with new revision.
-    """
-    try:
-        return notebooks.move_cell(path, base_revision, from_index, to_index)
-    except FileNotFoundError as exc:
-        return _tool_error("NotFound", str(exc))
-    except RuntimeError as exc:
-        return _tool_error("Conflict", str(exc))
-    except (ValueError, IndexError) as exc:
-        return _tool_error("ValidationError", str(exc))
-    except Exception as exc:
-        return _tool_error("ExecutionError", str(exc))
-
-
-@mcp.tool()
-def clear_outputs(path: str, base_revision: str, cell_index: Optional[int] = None) -> dict:
-    """Clear outputs for one code cell or all code cells in a notebook.
-
-    Args:
-        path: Notebook path.
-        base_revision: Revision from read_notebook.
-        cell_index: If provided, clear only this cell's outputs.
-            If omitted, clear all code cell outputs in the notebook.
-
-    Returns:
-        Mutation status with new revision and cleared_cells count.
-    """
-    try:
-        return notebooks.clear_outputs(path, base_revision, cell_index)
-    except FileNotFoundError as exc:
-        return _tool_error("NotFound", str(exc))
-    except RuntimeError as exc:
-        return _tool_error("Conflict", str(exc))
-    except (ValueError, IndexError) as exc:
-        return _tool_error("ValidationError", str(exc))
-    except Exception as exc:
-        return _tool_error("ExecutionError", str(exc))
-
-
-@mcp.tool()
-def batch_cells(path: str, base_revision: str, operations: list) -> dict:
-    """Apply multiple cell operations atomically under a single revision.
-
-    Avoids the N sequential round-trips required when building notebooks with
-    many insert_cell calls. All operations succeed or none are applied.
+    The sole tool for modifying notebook cells — handles single and bulk edits
+    with the same API. All operations succeed or none are applied.
 
     Each operation dict must include an `action` key:
-      - `{"action": "insert", "index": <int>, "cell_type": <str>, "source": <str>}`
-      - `{"action": "update", "cell_index": <int>, "source": <str>, "reset_outputs": <bool>}`
-        (`reset_outputs` is optional, defaults to True)
+      - `{"action": "insert", "cell_index": <int>, "cell_type": <str>, "source": <str>}`
+          Inserts a new cell at cell_index. cell_type: 'code', 'markdown', or 'raw'.
+      - `{"action": "update", "cell_index": <int>, "source": <str>}`
+          Replaces a cell's source. Also clears outputs/execution_count for code cells
+          unless `"reset_outputs": false` is added.
       - `{"action": "delete", "cell_index": <int>}`
+          Removes the cell at cell_index.
 
     IMPORTANT: Operations are applied sequentially to a live list. An insert
     shifts all subsequent cell indices up by 1; a delete shifts them down.
@@ -489,17 +401,17 @@ def batch_cells(path: str, base_revision: str, operations: list) -> dict:
     try:
         return notebooks.batch_cells(path, base_revision, operations)
     except FileNotFoundError as exc:
-        return _tool_error("NotFound", str(exc))
+        raise ToolError(f"[NotFound] {exc}") from exc
     except RuntimeError as exc:
-        return _tool_error("Conflict", str(exc))
+        raise ToolError(f"[Conflict] {exc}") from exc
     except (ValueError, IndexError) as exc:
-        return _tool_error("ValidationError", str(exc))
+        raise ToolError(f"[ValidationError] {exc}") from exc
     except Exception as exc:
-        return _tool_error("ExecutionError", str(exc))
+        raise ToolError(f"[ExecutionError] {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
-# MCP tools — Execution
+# MCP tools — Execution (2 tools)
 # ---------------------------------------------------------------------------
 
 
@@ -508,8 +420,6 @@ def run_code(
     session_id: str,
     code: str,
     timeout_s: int = 60,
-    on_timeout: str = "interrupt",
-    capture: str = "summary",
     wait_ms: int = 5000,
     include_images: bool = False,
 ) -> dict:
@@ -520,15 +430,13 @@ def run_code(
     (status='completed'). If it times out, returns the operation descriptor
     (status='queued' or 'running') — then poll with get_operation(op_id, wait_ms=5000).
 
+    On timeout, the kernel receives an interrupt signal — execution stops but all
+    previously defined variables and imports remain available.
+
     Args:
         session_id: Existing session ID from create_session.
         code: Source code to execute.
         timeout_s: Wall-clock execution timeout in seconds.
-        on_timeout: Action when timeout_s is exceeded. `interrupt` (only option)
-            sends a kernel interrupt signal, stopping execution but keeping
-            the session alive.
-        capture: Output detail level. `summary` (default) caps rich_outputs at
-            10 items. `full` returns all outputs unfiltered.
         wait_ms: Milliseconds to wait for inline result (0 = fire-and-forget).
         include_images: When True, include raw base64 image data. When False
             (default), images are replaced with size placeholders like
@@ -537,21 +445,16 @@ def run_code(
     Returns:
         Completed operation snapshot when fast, or operation descriptor to poll.
     """
-    if on_timeout not in {"interrupt"}:
-        return _tool_error("ValidationError", "on_timeout currently supports only 'interrupt'")
-    if capture not in {"summary", "full"}:
-        return _tool_error("ValidationError", "capture must be 'summary' or 'full'")
-
     def _job(_: str) -> dict:
-        return orchestrator.run_code(session_id, code, timeout_s, on_timeout, capture, include_images)
+        return orchestrator.run_code(session_id, code, timeout_s, "summary", include_images)
 
     def _cancel_cb() -> None:
         provider.interrupt(session_id)
 
-    snapshot = ops.submit(kind="run_code", fn=_job, cancel_callback=_cancel_cb)
-    if "error" in snapshot or wait_ms <= 0:
+    snapshot = _raise_on_op_error(ops.submit(kind="run_code", fn=_job, cancel_callback=_cancel_cb))
+    if wait_ms <= 0:
         return snapshot
-    return ops.get(op_id=snapshot["op_id"], wait_ms=wait_ms)
+    return _raise_on_op_error(ops.get(op_id=snapshot["op_id"], wait_ms=wait_ms))
 
 
 @mcp.tool()
@@ -560,7 +463,8 @@ def run_notebook(
     python_path: str = "python",
     mode: str = "fresh",
     session_id: Optional[str] = None,
-    cell_selector: Optional[str] = None,
+    cell_start: Optional[int] = None,
+    cell_end: Optional[int] = None,
     timeout_s: int = 300,
     stop_on_error: bool = True,
     wait_ms: int = 0,
@@ -580,8 +484,8 @@ def run_notebook(
             (reuse an existing stateful session).
         session_id: Existing session ID. Required when mode='session',
             ignored when mode='fresh'.
-        cell_selector: Which cells to run. Supports: `all` (default), single index
-            (`5`), or slice (`5:9`, exclusive end).
+        cell_start: First cell index to execute (default 0 = from the start).
+        cell_end: Exclusive end index (default = cell_count = to the end).
         timeout_s: Timeout per cell in seconds.
         stop_on_error: Stop at first execution error.
         wait_ms: Milliseconds to wait for an inline result. Default 0 means
@@ -592,9 +496,9 @@ def run_notebook(
         Completed operation snapshot when fast, or operation descriptor to poll.
     """
     if mode not in {"fresh", "session"}:
-        return _tool_error("ValidationError", "mode must be 'fresh' or 'session'")
+        raise ToolError("[ValidationError] mode must be 'fresh' or 'session'")
     if mode == "session" and session_id is None:
-        return _tool_error("ValidationError", "mode='session' requires session_id")
+        raise ToolError("[ValidationError] mode='session' requires session_id")
 
     # Shared container: written by orchestrator once session is ready,
     # read by _cancel_cb so it can interrupt the kernel mid-cell.
@@ -611,7 +515,7 @@ def run_notebook(
             session_holder[0] = sid
 
         return orchestrator.run_notebook(
-            path, mode, python_path, session_id, cell_selector, timeout_s, stop_on_error,
+            path, mode, python_path, session_id, cell_start, cell_end, timeout_s, stop_on_error,
             _on_progress, _is_cancelled, _on_session_ready,
         )
 
@@ -623,14 +527,14 @@ def run_notebook(
             except Exception:
                 pass
 
-    snapshot = ops.submit(kind="run_notebook", fn=_job, cancel_callback=_cancel_cb)
-    if "error" in snapshot or wait_ms <= 0:
+    snapshot = _raise_on_op_error(ops.submit(kind="run_notebook", fn=_job, cancel_callback=_cancel_cb))
+    if wait_ms <= 0:
         return snapshot
-    return ops.get(op_id=snapshot["op_id"], wait_ms=wait_ms)
+    return _raise_on_op_error(ops.get(op_id=snapshot["op_id"], wait_ms=wait_ms))
 
 
 # ---------------------------------------------------------------------------
-# MCP tools — Operation management
+# MCP tools — Operation management (3 tools)
 # ---------------------------------------------------------------------------
 
 
@@ -648,11 +552,11 @@ def get_operation(op_id: str, wait_ms: int = 0) -> dict:
         Operation snapshot.
     """
     try:
-        return ops.get(op_id=op_id, wait_ms=wait_ms)
-    except TimeoutError:
-        return _tool_error("Timeout", "Operation wait timed out")
+        return _raise_on_op_error(ops.get(op_id=op_id, wait_ms=wait_ms))
+    except ToolError:
+        raise
     except Exception as exc:
-        return _tool_error("ExecutionError", str(exc))
+        raise ToolError(f"[ExecutionError] {exc}") from exc
 
 
 @mcp.tool()
@@ -666,9 +570,28 @@ def cancel_operation(op_id: str) -> dict:
         Updated operation snapshot.
     """
     try:
-        return ops.cancel(op_id)
+        return _raise_on_op_error(ops.cancel(op_id))
+    except ToolError:
+        raise
     except Exception as exc:
-        return _tool_error("ExecutionError", str(exc))
+        raise ToolError(f"[ExecutionError] {exc}") from exc
+
+
+@mcp.tool()
+def list_operations() -> dict:
+    """List all tracked operations.
+
+    Returns all operations known to the server — queued, running, completed,
+    failed, or cancelled. Useful for recovering op_ids after context truncation
+    or checking the status of multiple concurrent operations.
+
+    Returns:
+        Dict with `operations` list, each entry being an operation snapshot.
+    """
+    try:
+        return {"operations": ops.list()}
+    except Exception as exc:
+        raise ToolError(f"[ExecutionError] {exc}") from exc
 
 
 # ---------------------------------------------------------------------------

@@ -43,18 +43,23 @@ class NotebookStore(ABC):
         pass
 
     @abstractmethod
-    def delete_notebook(self, path: str, expected_revision: str) -> dict:
+    def delete_notebook(self, path: str, base_revision: str) -> dict:
         pass
 
     @abstractmethod
     def read(
         self,
         path: str,
-        cell_range: Optional[str],
-        include_outputs: bool,
-        output_limit: int,
+        cell_start: Optional[int] = None,
+        cell_end: Optional[int] = None,
+        include_outputs: bool = False,
+        output_limit: int = 4_000,
         include_images: bool = False,
     ) -> dict:
+        pass
+
+    @abstractmethod
+    def rename_notebook(self, path: str, new_path: str, base_revision: str) -> dict:
         pass
 
     @abstractmethod
@@ -304,20 +309,32 @@ class FileNotebookStore(NotebookStore):
             "revision": revision,
         }
 
-    def delete_notebook(self, path: str, expected_revision: str) -> dict:
+    def delete_notebook(self, path: str, base_revision: str) -> dict:
         nb_path = self._resolve(path)
         with self._lock_for(nb_path):
-            self._check_revision(nb_path, expected_revision)
+            self._check_revision(nb_path, base_revision)
             nb_path.unlink()
-        return {"status": "deleted", "path": str(nb_path), "base_revision": expected_revision}
+        return {"status": "deleted", "path": str(nb_path), "base_revision": base_revision}
 
-    def read(self, path: str, cell_range: Optional[str], include_outputs: bool, output_limit: int, include_images: bool = False) -> dict:
+    def read(
+        self,
+        path: str,
+        cell_start: Optional[int] = None,
+        cell_end: Optional[int] = None,
+        include_outputs: bool = False,
+        output_limit: int = 4_000,
+        include_images: bool = False,
+    ) -> dict:
         nb_path = self._resolve(path)
         with self._lock_for(nb_path):
             nb = self._read_nb(nb_path)
             revision = self._revision(nb_path)
 
-        start, end = self._parse_cell_range(cell_range, len(nb.cells))
+        count = len(nb.cells)
+        start = max(0, cell_start) if cell_start is not None else 0
+        end = min(count, cell_end) if cell_end is not None else count
+        if start > end:
+            raise ValueError(f"cell_start ({start}) must be <= cell_end ({end})")
         cells = []
         for i in range(start, end):
             cell = nb.cells[i]
@@ -340,6 +357,24 @@ class FileNotebookStore(NotebookStore):
             "kernel_name": nb.metadata.get("kernelspec", {}).get("name", "unknown"),
             "language": nb.metadata.get("kernelspec", {}).get("language", "unknown"),
             "cells": cells,
+        }
+
+    def rename_notebook(self, path: str, new_path: str, base_revision: str) -> dict:
+        nb_path = self._resolve(path)
+        new_nb_path = Path(new_path).expanduser().resolve()
+        self._check_allowed(new_nb_path)
+        if new_nb_path.exists():
+            raise FileExistsError(f"Destination {new_path!r} already exists")
+        with self._lock_for(nb_path):
+            self._check_revision(nb_path, base_revision)
+            new_nb_path.parent.mkdir(parents=True, exist_ok=True)
+            nb_path.rename(new_nb_path)
+            new_revision = self._revision(new_nb_path)
+        return {
+            "status": "renamed",
+            "old_path": str(nb_path),
+            "path": str(new_nb_path),
+            "revision": new_revision,
         }
 
     def insert_cell(
@@ -480,11 +515,11 @@ class FileNotebookStore(NotebookStore):
             for op in operations:
                 action = op.get("action", "")
                 if action == "insert":
-                    index = op["index"]
+                    index = op["cell_index"]
                     if not (0 <= index <= len(nb.cells)):
-                        raise IndexError(f"insert index {index} out of range")
+                        raise IndexError(f"insert cell_index {index} out of range")
                     nb.cells.insert(index, self._new_cell(op.get("cell_type", "code"), op.get("source", "")))
-                    applied.append({"action": "insert", "index": index})
+                    applied.append({"action": "insert", "cell_index": index})
                 elif action == "update":
                     ci = op["cell_index"]
                     if not (0 <= ci < len(nb.cells)):

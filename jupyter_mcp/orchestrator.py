@@ -10,7 +10,7 @@ from typing import Callable, Optional
 
 from jupyter_mcp import _parse_iopub_messages
 from jupyter_mcp.kernel import KernelProvider
-from jupyter_mcp.notebooks import NotebookStore, parse_cell_selector
+from jupyter_mcp.notebooks import NotebookStore
 
 
 class ExecutionOrchestrator:
@@ -20,8 +20,8 @@ class ExecutionOrchestrator:
         self.provider = provider
         self.notebooks = notebooks
 
-    def run_code(self, session_id: str, code: str, timeout_s: int, on_timeout: str, capture: str, include_images: bool = False) -> dict:
-        result = self.provider.execute(session_id=session_id, code=code, timeout_s=timeout_s, on_timeout=on_timeout)
+    def run_code(self, session_id: str, code: str, timeout_s: int, capture: str, include_images: bool = False) -> dict:
+        result = self.provider.execute(session_id=session_id, code=code, timeout_s=timeout_s, on_timeout="interrupt")
         raw_messages = result.pop("_raw_messages", None)
         if include_images and raw_messages is not None:
             parsed = _parse_iopub_messages(raw_messages, include_images=True)
@@ -45,7 +45,8 @@ class ExecutionOrchestrator:
         mode: str,
         python_path: str = "python",
         target_session_id: Optional[str] = None,
-        cell_selector: Optional[str] = None,
+        cell_start: Optional[int] = None,
+        cell_end: Optional[int] = None,
         timeout_s: int = 300,
         stop_on_error: bool = True,
         on_progress: Optional[Callable[[dict], None]] = None,
@@ -75,10 +76,12 @@ class ExecutionOrchestrator:
             on_session_ready(session_id)
 
         try:
-            read_data = self.notebooks.read(path=path, cell_range=None, include_outputs=False, output_limit=20000)
+            read_data = self.notebooks.read(path=path, include_outputs=False, output_limit=20000)
             revision = read_data["revision"]
             cells = read_data["cells"]
-            start, end = parse_cell_selector(cell_selector, len(cells))
+            count = len(cells)
+            start = max(0, cell_start) if cell_start is not None else 0
+            end = min(count, cell_end) if cell_end is not None else count
             selected = list(range(start, end))
 
             total_code = sum(

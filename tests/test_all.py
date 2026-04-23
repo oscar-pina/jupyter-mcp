@@ -198,7 +198,6 @@ class TestDataclasses(unittest.TestCase):
             last_used_at=1.0,
         )
         self.assertEqual(rec.state, "ready")
-        self.assertIsNone(rec.active_op_id)
 
     def test_operation_record_defaults(self):
         rec = OperationRecord(
@@ -335,7 +334,7 @@ class TestFileNotebookStore(unittest.TestCase):
         self.assertEqual(result["status"], "created")
         self.assertIn("revision", result)
 
-        read = self.store.read(self.nb_path, None, False, 1000)
+        read = self.store.read(self.nb_path, include_outputs=False, output_limit=1000)
         self.assertEqual(read["cell_count"], 0)
         self.assertIn("revision", read)
 
@@ -359,7 +358,7 @@ class TestFileNotebookStore(unittest.TestCase):
         upd = self.store.update_cell(self.nb_path, ins["revision"], 0, "x = 2", True)
         self.assertEqual(upd["status"], "updated")
 
-        read = self.store.read(self.nb_path, None, False, 1000)
+        read = self.store.read(self.nb_path, include_outputs=False, output_limit=1000)
         self.assertEqual(read["cells"][0]["source"], "x = 2")
 
     def test_delete_cell(self):
@@ -378,7 +377,7 @@ class TestFileNotebookStore(unittest.TestCase):
         mv = self.store.move_cell(self.nb_path, ins2["revision"], 0, 1)
         self.assertEqual(mv["status"], "moved")
 
-        read = self.store.read(self.nb_path, None, False, 1000)
+        read = self.store.read(self.nb_path, include_outputs=False, output_limit=1000)
         self.assertEqual(read["cells"][0]["source"], "b = 2")
         self.assertEqual(read["cells"][1]["source"], "a = 1")
 
@@ -414,8 +413,8 @@ class TestFileNotebookStore(unittest.TestCase):
         result = self._create()
         rev = result["revision"]
         ops = [
-            {"action": "insert", "index": 0, "cell_type": "code", "source": "a = 1"},
-            {"action": "insert", "index": 1, "cell_type": "markdown", "source": "# Title"},
+            {"action": "insert", "cell_index": 0, "cell_type": "code", "source": "a = 1"},
+            {"action": "insert", "cell_index": 1, "cell_type": "markdown", "source": "# Title"},
         ]
         batch = self.store.batch_cells(self.nb_path, rev, ops)
         self.assertEqual(batch["status"], "batch_applied")
@@ -467,7 +466,7 @@ class TestExecutionOrchestrator(unittest.TestCase):
             "_raw_messages": [],
         }
         orch, provider, _ = self._make_orchestrator(execute_return)
-        result = orch.run_code("sess_1", "print('hello')", 60, "interrupt", "summary")
+        result = orch.run_code("sess_1", "print('hello')", 60, "summary")
         self.assertEqual(result["stdout"], "hello")
         # summary mode caps rich_outputs at 10
         self.assertLessEqual(len(result["rich_outputs"]), 10)
@@ -483,7 +482,7 @@ class TestExecutionOrchestrator(unittest.TestCase):
             "_raw_messages": [],
         }
         orch, provider, _ = self._make_orchestrator(execute_return)
-        result = orch.run_code("sess_1", "print('hello')", 60, "interrupt", "full")
+        result = orch.run_code("sess_1", "print('hello')", 60, "full")
         self.assertEqual(result["stdout"], "hello")
 
     def test_parse_cell_selector_all(self):

@@ -180,6 +180,11 @@ class OperationManager:
             rec = self._ops.get(op_id)
             return rec is not None and rec.cancelled
 
+    def list(self) -> list[dict]:
+        """Return snapshots of all tracked operations."""
+        with self._lock:
+            return [self._snapshot(op) for op in self._ops.values()]
+
     def update_progress(self, op_id: str, progress: dict) -> None:
         """Update the progress field of a running operation."""
         with self._lock:

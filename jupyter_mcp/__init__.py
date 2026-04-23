@@ -61,6 +61,49 @@ def _truncate_text(text: str, limit: int) -> tuple[str, bool]:
     return text[:limit] + f"\n... [truncated — {len(text):,} total chars]", True
 
 
+def _summarize_plotly(fig: Any) -> dict:
+    """Extract a structured summary from a Plotly figure JSON object."""
+    if not isinstance(fig, dict):
+        return {"note": "[Plotly figure — unreadable format]"}
+    summary: dict[str, Any] = {}
+    layout = fig.get("layout", {})
+    if isinstance(layout, dict):
+        title = layout.get("title")
+        if isinstance(title, dict):
+            summary["title"] = title.get("text", "")
+        elif isinstance(title, str):
+            summary["title"] = title
+        xaxis = layout.get("xaxis", {})
+        if isinstance(xaxis, dict):
+            xt = xaxis.get("title")
+            summary["x_axis"] = xt.get("text", "") if isinstance(xt, dict) else (xt or "")
+        yaxis = layout.get("yaxis", {})
+        if isinstance(yaxis, dict):
+            yt = yaxis.get("title")
+            summary["y_axis"] = yt.get("text", "") if isinstance(yt, dict) else (yt or "")
+    traces = fig.get("data", [])
+    if isinstance(traces, list):
+        summary["trace_count"] = len(traces)
+        summary["trace_types"] = list(dict.fromkeys(
+            t.get("type", "scatter") for t in traces if isinstance(t, dict)
+        ))
+        trace_summaries = []
+        for t in traces:
+            if not isinstance(t, dict):
+                continue
+            ts: dict[str, Any] = {"type": t.get("type", "scatter")}
+            if "name" in t:
+                ts["name"] = t["name"]
+            for arr_key in ("x", "y", "z", "values", "labels"):
+                v = t.get(arr_key)
+                if isinstance(v, list):
+                    ts[f"{arr_key}_len"] = len(v)
+            trace_summaries.append(ts)
+        if trace_summaries:
+            summary["traces"] = trace_summaries
+    return summary
+
+
 def _format_display_dict(data: dict, include_images: bool = False) -> dict:
     out: dict[str, Any] = {}
     if "text/plain" in data:
@@ -81,7 +124,7 @@ def _format_display_dict(data: dict, include_images: bool = False) -> dict:
     if "application/json" in data:
         out["json"] = data["application/json"]
     if "application/vnd.plotly.v1+json" in data:
-        out["plotly"] = "[Plotly figure]"
+        out["plotly"] = _summarize_plotly(data["application/vnd.plotly.v1+json"])
     known = {
         "text/plain",
         "text/html",
@@ -210,6 +253,7 @@ __all__ = [
     "_tool_error",
     "_strip_ansi",
     "_truncate_text",
+    "_summarize_plotly",
     "_format_display_dict",
     "_parse_iopub_messages",
     "_build_nbformat_outputs",
